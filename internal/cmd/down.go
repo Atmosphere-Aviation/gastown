@@ -371,50 +371,55 @@ func printDownStatus(name string, ok bool, detail string) {
 	}
 }
 
-// killOrphanProcesses terminates claude and node child processes of a tmux pane.
-// This prevents orphan Claude Code processes that can accumulate and drain resources.
+// killOrphanProcesses terminates all processes in the same process group as tmux pane shells.
+// This uses PGID-based kill to catch ALL descendants (not just direct children),
+// preventing orphan Claude/node processes that can accumulate and drain resources.
 func killOrphanProcesses(t *tmux.Tmux, sessionName string) {
-	// Get the shell PID running in the tmux pane
-	panePID, err := t.GetPanePID(sessionName)
-	if err != nil || panePID == "" {
-		return // No pane PID, nothing to kill
+	// Get the shell PID(s) running in the tmux pane(s)
+	panePIDsRaw, err := t.GetPanePID(sessionName)
+	if err != nil || panePIDsRaw == "" {
+		return // No pane PIDs, nothing to kill
 	}
 
-	// Find claude and node child processes
-	var childPIDs []int
-	for _, procName := range []string{"claude", "node"} {
-		// pgrep -P finds children of the pane's shell
-		out, err := runCommand("pgrep", "-P", panePID, procName)
-		if err != nil {
+	// Collect unique PGIDs from all pane PIDs
+	pgidSet := make(map[int]bool)
+	for _, pidStr := range strings.Split(strings.TrimSpace(panePIDsRaw), "\n") {
+		pidStr = strings.TrimSpace(pidStr)
+		if pidStr == "" {
 			continue
 		}
-		for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
-			if line == "" {
-				continue
-			}
-			var pid int
-			if _, err := fmt.Sscanf(line, "%d", &pid); err == nil && pid > 0 {
-				childPIDs = append(childPIDs, pid)
-			}
+		var pid int
+		if _, err := fmt.Sscanf(pidStr, "%d", &pid); err != nil || pid <= 0 {
+			continue
 		}
+
+		// Get the process group ID for this pane's shell
+		pgid, err := syscall.Getpgid(pid)
+		if err != nil || pgid <= 0 {
+			continue
+		}
+		pgidSet[pgid] = true
 	}
 
-	if len(childPIDs) == 0 {
+	if len(pgidSet) == 0 {
 		return
 	}
 
-	// SIGTERM for graceful shutdown
-	for _, pid := range childPIDs {
-		_ = syscall.Kill(pid, syscall.SIGTERM)
+	// SIGTERM entire process groups for graceful shutdown
+	for pgid := range pgidSet {
+		// Negative PID signals the entire process group
+		_ = syscall.Kill(-pgid, syscall.SIGTERM)
 	}
 
 	// Wait 2 seconds for graceful termination
 	time.Sleep(2 * time.Second)
 
-	// SIGKILL survivors
-	for _, pid := range childPIDs {
-		if isProcessRunning(pid) {
-			_ = syscall.Kill(pid, syscall.SIGKILL)
+	// SIGKILL survivors in each process group
+	for pgid := range pgidSet {
+		// Check if any process in the group is still running
+		// (we check the PGID leader, but kill targets the whole group)
+		if isProcessRunning(pgid) {
+			_ = syscall.Kill(-pgid, syscall.SIGKILL)
 		}
 	}
 }
