@@ -278,6 +278,11 @@ func runDown(cmd *cobra.Command, args []string) error {
 				allOK = false
 			} else {
 				printDownStatus("Tmux server", true, "killed (all tmux sessions destroyed)")
+				// Kill any Claude/node processes that became orphans when tmux died
+				// tmux sends SIGHUP which Claude ignores, leaving orphaned processes
+				if orphanCount := cleanupOrphanedClaude(); orphanCount > 0 {
+					printDownStatus("Orphan cleanup", true, fmt.Sprintf("%d process(es) killed", orphanCount))
+				}
 			}
 		}
 	}
