@@ -103,7 +103,7 @@ func findActivePatrol(cfg PatrolConfig) (patrolID, patrolLine string, found bool
 // Returns the patrol ID or an error.
 func autoSpawnPatrol(cfg PatrolConfig) (string, error) {
 	// Find the proto ID for the patrol molecule
-	cmdCatalog := exec.Command("bd", "--no-daemon", "mol", "catalog")
+	cmdCatalog := exec.Command("bd", "--no-daemon", "formula", "list")
 	cmdCatalog.Dir = cfg.BeadsDir
 	var stdoutCatalog, stderrCatalog bytes.Buffer
 	cmdCatalog.Stdout = &stdoutCatalog
@@ -196,7 +196,7 @@ func outputPatrolContext(cfg PatrolConfig) {
 				fmt.Printf("⚠ %s\n", err.Error())
 			} else {
 				fmt.Println(style.Dim.Render(err.Error()))
-				fmt.Println(style.Dim.Render(fmt.Sprintf("Run `bd mol catalog` to troubleshoot.")))
+				fmt.Println(style.Dim.Render(fmt.Sprintf("Run `bd formula list` to troubleshoot.")))
 				return
 			}
 		} else {
