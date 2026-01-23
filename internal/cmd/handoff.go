@@ -204,8 +204,27 @@ func runHandoff(cmd *cobra.Command, args []string) error {
 		_ = os.WriteFile(markerPath, []byte(currentSession), 0644)
 	}
 
-	// Use exec to respawn the pane - this kills us and restarts
-	return t.RespawnPane(pane, restartCmd)
+	// Fork-and-kill pattern: spawn background process that survives Claude's death.
+	// This fixes the SIGHUP issue where Node.js (Claude Code) ignores the signal
+	// from tmux respawn-pane -k, causing sessions to never truly reset.
+	// See: https://github.com/steveyegge/gastown/issues/881
+	//
+	// The background process:
+	// 1. Sleeps 100ms to ensure it's fully detached
+	// 2. Kills the current process with SIGKILL (signal 9)
+	// 3. Runs tmux respawn-pane to restart with fresh Claude instance
+	pid := os.Getpid()
+	// Shell-escape the restart command for safe embedding
+	escapedCmd := strings.ReplaceAll(restartCmd, "'", "'\\''")
+	bgScript := fmt.Sprintf("sleep 0.1 && kill -9 %d 2>/dev/null; tmux respawn-pane -k -t %s '%s'",
+		pid, pane, escapedCmd)
+	bgCmd := exec.Command("bash", "-c", bgScript)
+	if err := bgCmd.Start(); err != nil {
+		return fmt.Errorf("starting background respawn: %w", err)
+	}
+	// Exit cleanly - background process handles kill+respawn
+	os.Exit(0)
+	return nil // Unreachable but satisfies compiler
 }
 
 // getCurrentTmuxSession returns the current tmux session name.
