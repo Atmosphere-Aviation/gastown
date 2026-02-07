@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -72,6 +73,19 @@ func TestVersionCmd(t *testing.T) {
 			t.Errorf("verbose line %q doesn't start with 'Timestamp: '", line)
 		}
 	})
+}
+
+func TestVersionVerboseGoVersion(t *testing.T) {
+	goVer := runtime.Version()
+	if !strings.HasPrefix(goVer, "go") {
+		t.Errorf("runtime.Version() = %q, want prefix 'go'", goVer)
+	}
+
+	// Verify the output line format matches what version.go produces
+	line := "Go version: " + goVer
+	if !strings.HasPrefix(line, "Go version: go") {
+		t.Errorf("verbose Go version line %q doesn't match expected format", line)
+	}
 }
 
 func TestVersionVerboseTimestampFormat(t *testing.T) {

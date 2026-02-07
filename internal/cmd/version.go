@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"os/exec"
+	"runtime"
 	"runtime/debug"
 	"strings"
 	"time"
@@ -44,6 +45,7 @@ var versionCmd = &cobra.Command{
 
 		if versionVerbose {
 			fmt.Printf("Timestamp: %s\n", time.Now().Format(time.RFC3339))
+			fmt.Printf("Go version: %s\n", runtime.Version())
 		}
 	},
 }
