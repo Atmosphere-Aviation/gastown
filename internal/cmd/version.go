@@ -26,12 +26,18 @@ var (
 )
 
 var versionVerbose bool
+var versionShort bool
 
 var versionCmd = &cobra.Command{
 	Use:     "version",
 	GroupID: GroupDiag,
 	Short:   "Print version information",
 	Run: func(cmd *cobra.Command, args []string) {
+		if versionShort {
+			fmt.Printf("%s-%s\n", Version, Build)
+			return
+		}
+
 		commit := resolveCommitHash()
 		branch := resolveBranch()
 
@@ -53,6 +59,7 @@ var versionCmd = &cobra.Command{
 func init() {
 	rootCmd.AddCommand(versionCmd)
 	versionCmd.Flags().BoolVarP(&versionVerbose, "verbose", "v", false, "Show extended version info including timestamp")
+	versionCmd.Flags().BoolVar(&versionShort, "short", false, "Output only the version number (e.g., 0.5.0-362)")
 
 	// Pass the build-time commit to the version package for stale binary checks
 	if Commit != "" {
