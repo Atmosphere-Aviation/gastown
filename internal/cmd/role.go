@@ -53,7 +53,12 @@ If both are available and disagree, a warning is shown.`,
 var roleShowCmd = &cobra.Command{
 	Use:   "show",
 	Short: "Show current role",
-	RunE:  runRoleShow,
+	Long: `Show the current agent role, its detection source, and associated metadata.
+
+Displays the role name, whether it was detected from the GT_ROLE environment
+variable or the current working directory, and the rig/worker identity if
+applicable. Warns if the two detection methods disagree.`,
+	RunE: runRoleShow,
 }
 
 var roleHomeCmd = &cobra.Command{
@@ -83,7 +88,12 @@ This is useful for debugging role detection issues.`,
 var roleListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List all known roles",
-	RunE:  runRoleList,
+	Long: `List all known Gas Town agent roles and their descriptions.
+
+Roles include mayor, deacon, witness, refinery, polecat, and crew.
+Each role has a specific scope and responsibilities within the
+Gas Town multi-agent architecture.`,
+	RunE: runRoleList,
 }
 
 var roleEnvCmd = &cobra.Command{
@@ -247,12 +257,13 @@ func detectRole(cwd, townRoot string) RoleInfo {
 	relPath = filepath.ToSlash(relPath)
 	parts := strings.Split(relPath, "/")
 
-	// Check for mayor role
-	// At town root, or in mayor/ or mayor/rig/
+	// Town root is a neutral location — don't infer any role from it.
+	// The mayor's actual home is mayor/ (matched below).
 	if relPath == "." || relPath == "" {
-		ctx.Role = RoleMayor
 		return ctx
 	}
+
+	// Check for mayor role: mayor/ or mayor/rig/
 	if len(parts) >= 1 && parts[0] == "mayor" {
 		ctx.Role = RoleMayor
 		return ctx
@@ -324,6 +335,8 @@ func parseRoleString(s string) (Role, string, string) {
 		return RoleMayor, "", ""
 	case "deacon":
 		return RoleDeacon, "", ""
+	case "boot":
+		return RoleBoot, "", ""
 	}
 
 	// Compound roles: rig/role or rig/polecats/name or rig/crew/name
@@ -336,6 +349,12 @@ func parseRoleString(s string) (Role, string, string) {
 	rig := parts[0]
 
 	switch parts[1] {
+	case "boot":
+		// Handle compound "deacon/boot" format from GT_ROLE env var
+		if rig == "deacon" && len(parts) == 2 {
+			return RoleBoot, "", ""
+		}
+		return Role(s), "", ""
 	case "witness":
 		return RoleWitness, rig, ""
 	case "refinery":
@@ -359,6 +378,7 @@ func parseRoleString(s string) (Role, string, string) {
 // ActorString returns the actor identity string for beads attribution.
 // Format matches beads created_by convention:
 //   - Simple roles: "mayor", "deacon"
+//   - Dog roles: "deacon-boot" (hyphenated, matching BD_ACTOR)
 //   - Rig-specific: "gastown/witness", "gastown/refinery"
 //   - Workers: "gastown/crew/max", "gastown/polecats/Toast"
 func (info RoleInfo) ActorString() string {
@@ -387,6 +407,8 @@ func (info RoleInfo) ActorString() string {
 			return fmt.Sprintf("%s/crew/%s", info.Rig, info.Polecat)
 		}
 		return "crew"
+	case RoleBoot:
+		return "deacon-boot"
 	default:
 		return string(info.Role)
 	}
@@ -419,6 +441,8 @@ func getRoleHome(role Role, rig, polecat, townRoot string) string {
 			return ""
 		}
 		return filepath.Join(townRoot, rig, "crew", polecat)
+	case RoleBoot:
+		return filepath.Join(townRoot, "deacon", "dogs", "boot")
 	default:
 		return ""
 	}

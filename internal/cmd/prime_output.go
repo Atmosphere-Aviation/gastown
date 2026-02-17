@@ -42,6 +42,8 @@ func outputPrimeContext(ctx RoleContext) error {
 		roleName = "polecat"
 	case RoleCrew:
 		roleName = "crew"
+	case RoleBoot:
+		roleName = "boot"
 	default:
 		// Unknown role - use fallback
 		return outputPrimeContextFallback(ctx)
@@ -94,6 +96,8 @@ func outputPrimeContextFallback(ctx RoleContext) error {
 		outputPolecatContext(ctx)
 	case RoleCrew:
 		outputCrewContext(ctx)
+	case RoleBoot:
+		outputBootContext(ctx)
 	default:
 		outputUnknownContext(ctx)
 	}
@@ -217,6 +221,24 @@ func outputCrewContext(ctx RoleContext) {
 		style.Dim.Render(ctx.Polecat), style.Dim.Render(ctx.Rig))
 }
 
+func outputBootContext(ctx RoleContext) {
+	fmt.Printf("%s\n\n", style.Bold.Render("# Boot Watchdog Context"))
+	fmt.Println("You are the **Boot Watchdog** - the daemon's entry point for Deacon triage.")
+	fmt.Println()
+	fmt.Println("## Responsibilities")
+	fmt.Println("- Observe Deacon session health")
+	fmt.Println("- Decide whether to wake, nudge, or restart the Deacon")
+	fmt.Println("- Run triage and exit (ephemeral - fresh each spawn)")
+	fmt.Println()
+	fmt.Println("## Key Commands")
+	fmt.Println("- `" + cli.Name() + " boot triage` - Run triage directly")
+	fmt.Println("- `" + cli.Name() + " boot status` - Show Boot status")
+	fmt.Println("- `" + cli.Name() + " deacon status` - Check Deacon health")
+	fmt.Println()
+	outputCommandQuickReference(ctx)
+	fmt.Printf("Town root: %s\n", style.Dim.Render(ctx.TownRoot))
+}
+
 func outputUnknownContext(ctx RoleContext) {
 	fmt.Printf("%s\n\n", style.Bold.Render("# Gas Town Context"))
 	fmt.Println("Could not determine specific role from current directory.")
@@ -228,7 +250,8 @@ func outputUnknownContext(ctx RoleContext) {
 	fmt.Println("- `<rig>/polecats/<name>/` - Polecat role")
 	fmt.Println("- `<rig>/witness/rig/` - Witness role")
 	fmt.Println("- `<rig>/refinery/rig/` - Refinery role")
-	fmt.Println("- Town root or `mayor/` - Mayor role")
+	fmt.Println("- `mayor/` or `<rig>/mayor/` - Mayor role")
+	fmt.Println("- Town root is neutral (set GT_ROLE or cd into a role directory)")
 	fmt.Println()
 	fmt.Printf("Town root: %s\n", style.Dim.Render(ctx.TownRoot))
 }
@@ -267,7 +290,7 @@ func outputCommandQuickReference(ctx RoleContext) {
 		fmt.Println("|------------|----------------|----------------|")
 		fmt.Printf("| Signal work complete | `%s done` | ~~bd close <root-issue>~~ (Refinery closes it) |\n", c)
 		fmt.Printf("| Message another agent | `%s nudge <target> \"msg\"` | ~~tmux send-keys~~ (unreliable) |\n", c)
-		fmt.Println("| Check workflow steps | `bd ready` | ~~gt mol status~~ (less useful) |")
+		fmt.Println("| Check workflow steps | `bd mol current` | ~~bd ready~~ (excludes molecule steps) |")
 		fmt.Println("| Create issues | `bd create \"title\"` | ~~gt issue create~~ (not a command) |")
 		fmt.Printf("| Escalate blocker | `%s escalate \"desc\" -s HIGH` | ~~waiting for human~~ (never wait) |\n", c)
 
@@ -293,6 +316,13 @@ func outputCommandQuickReference(ctx RoleContext) {
 		fmt.Printf("| Pause rig (daemon won't restart) | `%s rig park <rig>` | ~~gt rig stop~~ (daemon will restart it) |\n", c)
 		fmt.Printf("| Permanently disable rig | `%s rig dock <rig>` | ~~gt rig park~~ (temporary only) |\n", c)
 		fmt.Printf("| Message another agent | `%s nudge <target> \"msg\"` | ~~tmux send-keys~~ (unreliable) |\n", c)
+
+	case RoleBoot:
+		fmt.Println("| Want to... | Correct command | Common mistake |")
+		fmt.Println("|------------|----------------|----------------|")
+		fmt.Printf("| Run triage | `%s boot triage` | ~~gt deacon heartbeat~~ (that's Deacon's job) |\n", c)
+		fmt.Printf("| Check Deacon health | `%s deacon status` | ~~gt status~~ (town-wide, not Deacon-specific) |\n", c)
+		fmt.Printf("| Nudge the Deacon | `%s nudge deacon \"msg\"` | ~~tmux send-keys~~ (unreliable) |\n", c)
 	}
 
 	fmt.Println()
@@ -372,7 +402,7 @@ func outputStartupDirective(ctx RoleContext) {
 		fmt.Println("3. Check mail: `" + cli.Name() + " mail inbox` - look for 🤝 HANDOFF messages")
 		fmt.Println("4. Check for attached patrol: `" + cli.Name() + " hook`")
 		fmt.Println("   - If mol attached → **RUN IT** (resume from current step)")
-		fmt.Println("   - If no mol → create patrol: `bd mol wisp mol-witness-patrol`")
+		fmt.Println("   - If no mol → create patrol: `" + cli.Name() + " patrol new`")
 	case RolePolecat:
 		fmt.Println()
 		fmt.Println("---")
@@ -397,7 +427,7 @@ func outputStartupDirective(ctx RoleContext) {
 		fmt.Println("3. Check mail: `" + cli.Name() + " mail inbox` - look for 🤝 HANDOFF messages")
 		fmt.Println("4. Check for attached patrol: `" + cli.Name() + " hook`")
 		fmt.Println("   - If mol attached → **RUN IT** (resume from current step)")
-		fmt.Println("   - If no mol → create patrol: `bd mol wisp mol-refinery-patrol`")
+		fmt.Println("   - If no mol → create patrol: `" + cli.Name() + " patrol new`")
 	case RoleCrew:
 		fmt.Println()
 		fmt.Println("---")
@@ -427,6 +457,14 @@ func outputStartupDirective(ctx RoleContext) {
 		fmt.Println("5. Check for attached patrol: `" + cli.Name() + " hook`")
 		fmt.Println("   - If mol attached → **RUN IT** (resume from current step)")
 		fmt.Println("   - If no mol → create patrol: `bd mol wisp mol-deacon-patrol`")
+	case RoleBoot:
+		fmt.Println()
+		fmt.Println("---")
+		fmt.Println()
+		fmt.Println("**STARTUP PROTOCOL**: You are Boot. Please:")
+		fmt.Println("1. Run `" + cli.Name() + " prime` (loads full context)")
+		fmt.Println("2. Run `" + cli.Name() + " boot triage` immediately")
+		fmt.Println("3. When triage completes, exit cleanly")
 	}
 }
 

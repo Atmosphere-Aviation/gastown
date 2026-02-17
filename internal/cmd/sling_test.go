@@ -1,11 +1,14 @@
 package cmd
 
 import (
+	"bytes"
+	"github.com/steveyegge/gastown/internal/config"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 func writeBDStub(t *testing.T, binDir string, unixScript string, windowsScript string) string {
@@ -289,6 +292,318 @@ exit /b 0
 
 	if !gotCook || !gotWisp || !gotBond {
 		t.Fatalf("missing expected bd commands: cook=%v wisp=%v bond=%v (log: %q)", gotCook, gotWisp, gotBond, string(logBytes))
+	}
+}
+
+func TestSlingRollsBackSpawnedPolecatOnInstantiateFailure(t *testing.T) {
+	townRoot := t.TempDir()
+
+	// Minimal workspace marker so workspace.FindFromCwd() succeeds.
+	if err := os.MkdirAll(filepath.Join(townRoot, "mayor", "rig"), 0755); err != nil {
+		t.Fatalf("mkdir mayor/rig: %v", err)
+	}
+
+	// Register rig so IsRigName("gastown") succeeds.
+	rigsPath := filepath.Join(townRoot, "mayor", "rigs.json")
+	rigs := &config.RigsConfig{
+		Version: 1,
+		Rigs: map[string]config.RigEntry{
+			"gastown": {
+				GitURL:    "git@github.com:test/gastown.git",
+				LocalRepo: "",
+				AddedAt:   time.Now().Truncate(time.Second),
+				BeadsConfig: &config.BeadsConfig{
+					Repo:   "local",
+					Prefix: "gt-",
+				},
+			},
+		},
+	}
+	if err := config.SaveRigsConfig(rigsPath, rigs); err != nil {
+		t.Fatalf("SaveRigsConfig: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(townRoot, "gastown", "mayor", "rig"), 0755); err != nil {
+		t.Fatalf("mkdir rig beads dir: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(townRoot, "gastown"), 0755); err != nil {
+		t.Fatalf("mkdir rig dir: %v", err)
+	}
+
+	// Routes: gt-* resolves to gastown's rig beads dir.
+	if err := os.MkdirAll(filepath.Join(townRoot, ".beads"), 0755); err != nil {
+		t.Fatalf("mkdir .beads: %v", err)
+	}
+	routes := strings.Join([]string{
+		`{"prefix":"gt-","path":"gastown/mayor/rig"}`,
+		`{"prefix":"hq-","path":"."}`,
+		"",
+	}, "\n")
+	if err := os.WriteFile(filepath.Join(townRoot, ".beads", "routes.jsonl"), []byte(routes), 0644); err != nil {
+		t.Fatalf("write routes.jsonl: %v", err)
+	}
+
+	// Stub bd: make mol wisp fail to simulate missing required vars.
+	binDir := filepath.Join(townRoot, "bin")
+	if err := os.MkdirAll(binDir, 0755); err != nil {
+		t.Fatalf("mkdir binDir: %v", err)
+	}
+	bdScript := `#!/bin/sh
+set -e
+cmd="$1"
+shift || true
+case "$cmd" in
+  show)
+    echo '[{"title":"Test issue","status":"open","assignee":"","description":""}]'
+    exit 0
+    ;;
+  update)
+    exit 0
+    ;;
+  cook)
+    exit 0
+    ;;
+  mol)
+    sub="$1"
+    shift || true
+    case "$sub" in
+      wisp)
+        echo "missing required vars" 1>&2
+        exit 1
+        ;;
+    esac
+    ;;
+esac
+exit 0
+`
+	bdScriptWindows := `@echo off
+setlocal enableextensions
+set "cmd=%1"
+set "sub=%2"
+if "%cmd%"=="show" (
+  echo [{"title":"Test issue","status":"open","assignee":"","description":""}]
+  exit /b 0
+)
+if "%cmd%"=="update" exit /b 0
+if "%cmd%"=="cook" exit /b 0
+if "%cmd%"=="mol" (
+  if "%sub%"=="wisp" (
+    echo missing required vars 1>&2
+    exit /b 1
+  )
+)
+exit /b 0
+`
+	_ = writeBDStub(t, binDir, bdScript, bdScriptWindows)
+
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv(EnvGTRole, "mayor")
+	t.Setenv("GT_POLECAT", "")
+	t.Setenv("GT_CREW", "")
+	t.Setenv("TMUX_PANE", "")
+	t.Setenv("GT_TEST_NO_NUDGE", "1")
+	t.Setenv("GT_TEST_SKIP_HOOK_VERIFY", "1")
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(cwd) })
+	if err := os.Chdir(filepath.Join(townRoot, "mayor", "rig")); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+
+	// Ensure we don't leak global flag/seam state across tests.
+	prevNoConvoy := slingNoConvoy
+	prevNoBoot := slingNoBoot
+	prevDryRun := slingDryRun
+	prevHookRaw := slingHookRawBead
+	prevSpawn := spawnPolecatForSling
+	prevRollback := rollbackSlingArtifactsFn
+	t.Cleanup(func() {
+		slingNoConvoy = prevNoConvoy
+		slingNoBoot = prevNoBoot
+		slingDryRun = prevDryRun
+		slingHookRawBead = prevHookRaw
+		spawnPolecatForSling = prevSpawn
+		rollbackSlingArtifactsFn = prevRollback
+	})
+
+	slingDryRun = false
+	slingNoConvoy = true
+	slingNoBoot = true
+	slingHookRawBead = false
+
+	spawnPolecatForSling = func(rigName string, opts SlingSpawnOptions) (*SpawnedPolecatInfo, error) {
+		return &SpawnedPolecatInfo{
+			RigName:     rigName,
+			PolecatName: "Toast",
+			ClonePath:   filepath.Join(townRoot, "fake-polecat"),
+			DoltBranch:  "",
+		}, nil
+	}
+
+	rollbackCalled := false
+	rollbackSlingArtifactsFn = func(spawnInfo *SpawnedPolecatInfo, beadID, hookWorkDir string) {
+		rollbackCalled = true
+		if spawnInfo == nil || spawnInfo.PolecatName != "Toast" {
+			t.Fatalf("unexpected spawnInfo in rollback: %+v", spawnInfo)
+		}
+		if beadID != "gt-abc123" {
+			t.Fatalf("unexpected beadID in rollback: %q", beadID)
+		}
+		if want := filepath.Join(townRoot, "fake-polecat"); hookWorkDir != want {
+			t.Fatalf("unexpected hookWorkDir in rollback: got %q want %q", hookWorkDir, want)
+		}
+	}
+
+	err = runSling(nil, []string{"gt-abc123", "gastown"})
+	if err == nil {
+		t.Fatalf("expected error from runSling")
+	}
+	if !rollbackCalled {
+		t.Fatalf("expected rollbackSlingArtifacts to be called")
+	}
+}
+
+func TestSlingFormulaRollsBackSpawnedPolecatOnWispFailure(t *testing.T) {
+	townRoot := t.TempDir()
+
+	// Minimal workspace marker so workspace.FindFromCwd() succeeds.
+	if err := os.MkdirAll(filepath.Join(townRoot, "mayor", "rig"), 0755); err != nil {
+		t.Fatalf("mkdir mayor/rig: %v", err)
+	}
+
+	// Register rig so IsRigName("gastown") succeeds.
+	rigsPath := filepath.Join(townRoot, "mayor", "rigs.json")
+	rigs := &config.RigsConfig{
+		Version: 1,
+		Rigs: map[string]config.RigEntry{
+			"gastown": {
+				GitURL:    "git@github.com:test/gastown.git",
+				LocalRepo: "",
+				AddedAt:   time.Now().Truncate(time.Second),
+				BeadsConfig: &config.BeadsConfig{
+					Repo:   "local",
+					Prefix: "gt-",
+				},
+			},
+		},
+	}
+	if err := config.SaveRigsConfig(rigsPath, rigs); err != nil {
+		t.Fatalf("SaveRigsConfig: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(townRoot, "gastown", "mayor", "rig"), 0755); err != nil {
+		t.Fatalf("mkdir rig beads dir: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(townRoot, "gastown"), 0755); err != nil {
+		t.Fatalf("mkdir rig dir: %v", err)
+	}
+
+	// Stub bd: cook succeeds; mol wisp fails to simulate missing required vars.
+	binDir := filepath.Join(townRoot, "bin")
+	if err := os.MkdirAll(binDir, 0755); err != nil {
+		t.Fatalf("mkdir binDir: %v", err)
+	}
+	bdScript := `#!/bin/sh
+set -e
+cmd="$1"
+shift || true
+case "$cmd" in
+  cook)
+    exit 0
+    ;;
+  mol)
+    sub="$1"
+    shift || true
+    case "$sub" in
+      wisp)
+        echo "missing required vars" 1>&2
+        exit 1
+        ;;
+    esac
+    ;;
+esac
+exit 0
+`
+	bdScriptWindows := `@echo off
+setlocal enableextensions
+set "cmd=%1"
+set "sub=%2"
+if "%cmd%"=="cook" exit /b 0
+if "%cmd%"=="mol" (
+  if "%sub%"=="wisp" (
+    echo missing required vars 1>&2
+    exit /b 1
+  )
+)
+exit /b 0
+`
+	_ = writeBDStub(t, binDir, bdScript, bdScriptWindows)
+
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv(EnvGTRole, "mayor")
+	t.Setenv("GT_POLECAT", "")
+	t.Setenv("GT_CREW", "")
+	t.Setenv("TMUX_PANE", "")
+	t.Setenv("GT_TEST_NO_NUDGE", "1")
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(cwd) })
+	if err := os.Chdir(filepath.Join(townRoot, "mayor", "rig")); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+
+	// Ensure we don't leak global flag/seam state across tests.
+	prevNoBoot := slingNoBoot
+	prevDryRun := slingDryRun
+	prevSpawn := spawnPolecatForSling
+	prevRollback := rollbackSlingArtifactsFn
+	t.Cleanup(func() {
+		slingNoBoot = prevNoBoot
+		slingDryRun = prevDryRun
+		spawnPolecatForSling = prevSpawn
+		rollbackSlingArtifactsFn = prevRollback
+	})
+
+	slingDryRun = false
+	slingNoBoot = true
+
+	fakeWorkDir := filepath.Join(townRoot, "fake-polecat")
+	if err := os.MkdirAll(fakeWorkDir, 0755); err != nil {
+		t.Fatalf("mkdir fakeWorkDir: %v", err)
+	}
+	spawnPolecatForSling = func(rigName string, opts SlingSpawnOptions) (*SpawnedPolecatInfo, error) {
+		return &SpawnedPolecatInfo{
+			RigName:     rigName,
+			PolecatName: "Toast",
+			ClonePath:   fakeWorkDir,
+			DoltBranch:  "",
+		}, nil
+	}
+
+	rollbackCalled := false
+	rollbackSlingArtifactsFn = func(spawnInfo *SpawnedPolecatInfo, beadID, hookWorkDir string) {
+		rollbackCalled = true
+		if spawnInfo == nil || spawnInfo.PolecatName != "Toast" {
+			t.Fatalf("unexpected spawnInfo in rollback: %+v", spawnInfo)
+		}
+		if beadID != "" {
+			t.Fatalf("unexpected beadID in rollback: %q", beadID)
+		}
+		if hookWorkDir != fakeWorkDir {
+			t.Fatalf("unexpected hookWorkDir in rollback: got %q want %q", hookWorkDir, fakeWorkDir)
+		}
+	}
+
+	err = runSlingFormula([]string{"mol-anything", "gastown"})
+	if err == nil {
+		t.Fatalf("expected error from runSlingFormula")
+	}
+	if !rollbackCalled {
+		t.Fatalf("expected rollbackSlingArtifactsFn to be called")
 	}
 }
 
@@ -1203,5 +1518,517 @@ exit /b 0
 		if !strings.Contains(line, "ENV:BD_DOLT_AUTO_COMMIT=off|") {
 			t.Errorf("bd command missing BD_DOLT_AUTO_COMMIT=off: %s", line)
 		}
+	}
+}
+
+// TestSlingIdempotentNoOp verifies that slinging a bead to the same target
+// it's already assigned to returns a no-op instead of an error.
+func TestSlingIdempotentNoOp(t *testing.T) {
+	townRoot := t.TempDir()
+
+	if err := os.MkdirAll(filepath.Join(townRoot, "mayor", "rig"), 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	binDir := filepath.Join(townRoot, "bin")
+	if err := os.MkdirAll(binDir, 0755); err != nil {
+		t.Fatalf("mkdir binDir: %v", err)
+	}
+	bdScript := `#!/bin/sh
+set -e
+cmd="$1"
+shift || true
+case "$cmd" in
+  show)
+    echo '[{"title":"Test issue","status":"hooked","assignee":"gastown/polecats/toast","description":""}]'
+    ;;
+  update)
+    exit 0
+    ;;
+esac
+exit 0
+`
+	bdScriptWindows := `@echo off
+set "cmd=%1"
+if "%cmd%"=="show" (
+  echo [{"title":"Test issue","status":"hooked","assignee":"gastown/polecats/toast","description":""}]
+  exit /b 0
+)
+exit /b 0
+`
+	_ = writeBDStub(t, binDir, bdScript, bdScriptWindows)
+
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv(EnvGTRole, "mayor")
+	t.Setenv("GT_CREW", "")
+	t.Setenv("GT_POLECAT", "")
+	t.Setenv("TMUX_PANE", "")
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(cwd) })
+	if err := os.Chdir(filepath.Join(townRoot, "mayor", "rig")); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+
+	// Stub isHookedAgentDead to return false (agent is alive)
+	prevDeadFn := isHookedAgentDeadFn
+	t.Cleanup(func() { isHookedAgentDeadFn = prevDeadFn })
+	isHookedAgentDeadFn = func(assignee string) bool { return false }
+
+	prevForce := slingForce
+	prevNoConvoy := slingNoConvoy
+	t.Cleanup(func() {
+		slingForce = prevForce
+		slingNoConvoy = prevNoConvoy
+	})
+	slingForce = false
+	slingNoConvoy = true
+
+	// Sling to same target — should no-op (return nil, no error)
+	err = runSling(nil, []string{"gt-test123", "gastown/polecats/toast"})
+	if err != nil {
+		t.Fatalf("expected no-op nil return, got error: %v", err)
+	}
+}
+
+// TestSlingIdempotentNoOp_Pinned verifies that slinging a pinned bead to the
+// same target returns a no-op, just like the hooked case.
+func TestSlingIdempotentNoOp_Pinned(t *testing.T) {
+	townRoot := t.TempDir()
+
+	if err := os.MkdirAll(filepath.Join(townRoot, "mayor", "rig"), 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	binDir := filepath.Join(townRoot, "bin")
+	if err := os.MkdirAll(binDir, 0755); err != nil {
+		t.Fatalf("mkdir binDir: %v", err)
+	}
+	bdScript := `#!/bin/sh
+set -e
+cmd="$1"
+shift || true
+case "$cmd" in
+  show)
+    echo '[{"title":"Test issue","status":"pinned","assignee":"gastown/polecats/toast","description":""}]'
+    ;;
+  update)
+    exit 0
+    ;;
+esac
+exit 0
+`
+	bdScriptWindows := `@echo off
+set "cmd=%1"
+if "%cmd%"=="show" (
+  echo [{"title":"Test issue","status":"pinned","assignee":"gastown/polecats/toast","description":""}]
+  exit /b 0
+)
+exit /b 0
+`
+	_ = writeBDStub(t, binDir, bdScript, bdScriptWindows)
+
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv(EnvGTRole, "mayor")
+	t.Setenv("GT_CREW", "")
+	t.Setenv("GT_POLECAT", "")
+	t.Setenv("TMUX_PANE", "")
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(cwd) })
+	if err := os.Chdir(filepath.Join(townRoot, "mayor", "rig")); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+
+	// Pinned beads don't check isHookedAgentDead, but stub it anyway for safety
+	prevDeadFn := isHookedAgentDeadFn
+	t.Cleanup(func() { isHookedAgentDeadFn = prevDeadFn })
+	isHookedAgentDeadFn = func(assignee string) bool { return false }
+
+	prevForce := slingForce
+	prevNoConvoy := slingNoConvoy
+	t.Cleanup(func() {
+		slingForce = prevForce
+		slingNoConvoy = prevNoConvoy
+	})
+	slingForce = false
+	slingNoConvoy = true
+
+	// Sling pinned bead to same target — should no-op (return nil, no error)
+	err = runSling(nil, []string{"gt-test-pinned", "gastown/polecats/toast"})
+	if err != nil {
+		t.Fatalf("expected no-op nil return for pinned bead, got error: %v", err)
+	}
+}
+
+// TestSlingDeadAgentBypassesIdempotency verifies that a dead hooked agent
+// triggers auto-force re-sling even when the target matches the current assignee.
+func TestSlingDeadAgentBypassesIdempotency(t *testing.T) {
+	townRoot := t.TempDir()
+
+	if err := os.MkdirAll(filepath.Join(townRoot, "mayor", "rig"), 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	binDir := filepath.Join(townRoot, "bin")
+	if err := os.MkdirAll(binDir, 0755); err != nil {
+		t.Fatalf("mkdir binDir: %v", err)
+	}
+	logPath := filepath.Join(townRoot, "bd.log")
+	bdScript := `#!/bin/sh
+set -e
+echo "$*" >> "${BD_LOG}"
+cmd="$1"
+shift || true
+case "$cmd" in
+  show)
+    echo '[{"title":"Test issue","status":"hooked","assignee":"gastown/polecats/toast","description":""}]'
+    ;;
+  update)
+    exit 0
+    ;;
+esac
+exit 0
+`
+	bdScriptWindows := `@echo off
+echo %*>>"%BD_LOG%"
+set "cmd=%1"
+if "%cmd%"=="show" (
+  echo [{"title":"Test issue","status":"hooked","assignee":"gastown/polecats/toast","description":""}]
+  exit /b 0
+)
+exit /b 0
+`
+	_ = writeBDStub(t, binDir, bdScript, bdScriptWindows)
+
+	t.Setenv("BD_LOG", logPath)
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv(EnvGTRole, "mayor")
+	t.Setenv("GT_CREW", "")
+	t.Setenv("GT_POLECAT", "")
+	t.Setenv("TMUX_PANE", "")
+	t.Setenv("GT_TEST_NO_NUDGE", "1")
+	t.Setenv("GT_TEST_SKIP_HOOK_VERIFY", "1")
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(cwd) })
+	if err := os.Chdir(filepath.Join(townRoot, "mayor", "rig")); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+
+	// Stub isHookedAgentDead to return true (agent is dead)
+	prevDeadFn := isHookedAgentDeadFn
+	t.Cleanup(func() { isHookedAgentDeadFn = prevDeadFn })
+	isHookedAgentDeadFn = func(assignee string) bool { return true }
+
+	prevForce := slingForce
+	prevNoConvoy := slingNoConvoy
+	prevDryRun := slingDryRun
+	t.Cleanup(func() {
+		slingForce = prevForce
+		slingNoConvoy = prevNoConvoy
+		slingDryRun = prevDryRun
+	})
+	slingForce = false
+	slingNoConvoy = true
+	slingDryRun = true // dry-run to avoid side effects from resolveTarget
+
+	// Capture stdout to verify the "auto-forcing re-sling" message is printed.
+	origStdout := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+	t.Cleanup(func() { os.Stdout = origStdout })
+
+	// Sling with matching target but dead agent — should NOT no-op.
+	// The auto-force path proceeds into resolveTarget which will fail
+	// because the rig doesn't exist in the test environment. The key
+	// assertion: we must NOT get an idempotent no-op (nil error).
+	err = runSling(nil, []string{"gt-test456", "gastown/polecats/toast"})
+
+	w.Close()
+	os.Stdout = origStdout
+	var captured bytes.Buffer
+	_, _ = captured.ReadFrom(r)
+	stdout := captured.String()
+
+	if err == nil {
+		t.Fatal("expected error from resolveTarget (proving auto-force bypassed idempotency), got nil (no-op)")
+	}
+	// Must NOT be the "already hooked" error — that would mean idempotency kicked in
+	if strings.Contains(err.Error(), "already") && strings.Contains(err.Error(), "hooked") {
+		t.Fatalf("got 'already hooked' error, meaning idempotency was NOT bypassed for dead agent: %v", err)
+	}
+	// Verify the auto-force message was printed (direct signal that dead-agent path was taken)
+	if !strings.Contains(stdout, "auto-forcing re-sling") {
+		t.Fatalf("expected 'auto-forcing re-sling' in stdout, got: %q", stdout)
+	}
+}
+
+// TestSlingForceBypassesIdempotency verifies that --force skips the
+// idempotency check and proceeds with re-sling even for matching targets.
+func TestSlingForceBypassesIdempotency(t *testing.T) {
+	townRoot := t.TempDir()
+
+	if err := os.MkdirAll(filepath.Join(townRoot, "mayor", "rig"), 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	binDir := filepath.Join(townRoot, "bin")
+	if err := os.MkdirAll(binDir, 0755); err != nil {
+		t.Fatalf("mkdir binDir: %v", err)
+	}
+	logPath := filepath.Join(townRoot, "bd.log")
+	bdScript := `#!/bin/sh
+set -e
+echo "$*" >> "${BD_LOG}"
+cmd="$1"
+shift || true
+case "$cmd" in
+  show)
+    echo '[{"title":"Test issue","status":"hooked","assignee":"gastown/polecats/toast","description":""}]'
+    ;;
+  update)
+    exit 0
+    ;;
+esac
+exit 0
+`
+	bdScriptWindows := `@echo off
+echo %*>>"%BD_LOG%"
+set "cmd=%1"
+if "%cmd%"=="show" (
+  echo [{"title":"Test issue","status":"hooked","assignee":"gastown/polecats/toast","description":""}]
+  exit /b 0
+)
+exit /b 0
+`
+	_ = writeBDStub(t, binDir, bdScript, bdScriptWindows)
+
+	t.Setenv("BD_LOG", logPath)
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv(EnvGTRole, "mayor")
+	t.Setenv("GT_CREW", "")
+	t.Setenv("GT_POLECAT", "")
+	t.Setenv("TMUX_PANE", "")
+	t.Setenv("GT_TEST_NO_NUDGE", "1")
+	t.Setenv("GT_TEST_SKIP_HOOK_VERIFY", "1")
+
+	molLogPath := filepath.Join(townRoot, "mol.log")
+	t.Setenv("GT_TEST_ATTACHED_MOLECULE_LOG", molLogPath)
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(cwd) })
+	if err := os.Chdir(filepath.Join(townRoot, "mayor", "rig")); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+
+	prevForce := slingForce
+	prevNoConvoy := slingNoConvoy
+	prevDryRun := slingDryRun
+	t.Cleanup(func() {
+		slingForce = prevForce
+		slingNoConvoy = prevNoConvoy
+		slingDryRun = prevDryRun
+	})
+	slingForce = true // --force
+	slingNoConvoy = true
+	slingDryRun = true
+
+	// --force bypasses the entire pinned/hooked guard including idempotency.
+	// resolveTarget will fail because rig doesn't exist, but the key assertion
+	// is that we don't get an "already hooked" error (idempotency no-op is skipped).
+	err = runSling(nil, []string{"gt-test789", "gastown/polecats/toast"})
+	if err == nil {
+		// In dry-run + force mode, resolveTarget still runs.
+		// nil is acceptable if resolveTarget succeeded.
+	} else if strings.Contains(err.Error(), "already") && strings.Contains(err.Error(), "hooked") {
+		t.Fatalf("got 'already hooked' error, meaning --force did not bypass guard: %v", err)
+	}
+	// Any other error (e.g., from resolveTarget) is fine — proves we got past the guard.
+}
+
+// TestSlingFormulaOnBeadBypassesIdempotency verifies that formula-on-bead mode
+// (gt sling <formula> --on <bead>) does NOT idempotent no-op even when the
+// target assignment already matches. The user expects formula instantiation to run.
+func TestSlingFormulaOnBeadBypassesIdempotency(t *testing.T) {
+	townRoot := t.TempDir()
+
+	if err := os.MkdirAll(filepath.Join(townRoot, "mayor", "rig"), 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	binDir := filepath.Join(townRoot, "bin")
+	if err := os.MkdirAll(binDir, 0755); err != nil {
+		t.Fatalf("mkdir binDir: %v", err)
+	}
+	// The bd stub must handle both "show" (for verifyBeadExists) and
+	// "formula" (for verifyFormulaExists) subcommands so that the test
+	// reaches the idempotency guard rather than failing earlier.
+	bdScript := `#!/bin/sh
+set -e
+cmd="$1"
+shift || true
+case "$cmd" in
+  show)
+    echo '[{"title":"Test issue","status":"hooked","assignee":"gastown/polecats/toast","description":""}]'
+    ;;
+  formula)
+    echo '{"name":"test-formula","steps":[]}'
+    ;;
+  update)
+    exit 0
+    ;;
+esac
+exit 0
+`
+	bdScriptWindows := `@echo off
+set "cmd=%1"
+if "%cmd%"=="show" (
+  echo [{"title":"Test issue","status":"hooked","assignee":"gastown/polecats/toast","description":""}]
+  exit /b 0
+)
+if "%cmd%"=="formula" (
+  echo {"name":"test-formula","steps":[]}
+  exit /b 0
+)
+exit /b 0
+`
+	_ = writeBDStub(t, binDir, bdScript, bdScriptWindows)
+
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv(EnvGTRole, "mayor")
+	t.Setenv("GT_CREW", "")
+	t.Setenv("GT_POLECAT", "")
+	t.Setenv("TMUX_PANE", "")
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(cwd) })
+	if err := os.Chdir(filepath.Join(townRoot, "mayor", "rig")); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+
+	// Stub isHookedAgentDead to return false (agent is alive)
+	prevDeadFn := isHookedAgentDeadFn
+	t.Cleanup(func() { isHookedAgentDeadFn = prevDeadFn })
+	isHookedAgentDeadFn = func(assignee string) bool { return false }
+
+	prevForce := slingForce
+	prevNoConvoy := slingNoConvoy
+	prevOnTarget := slingOnTarget
+	t.Cleanup(func() {
+		slingForce = prevForce
+		slingNoConvoy = prevNoConvoy
+		slingOnTarget = prevOnTarget
+	})
+	slingForce = false
+	slingNoConvoy = true
+	slingOnTarget = "gt-test-formula-on-bead" // --on flag: bead ID
+
+	// Formula-on-bead with matching target. The idempotency guard must NOT
+	// return nil (no-op) or "already hooked" error — it should fall through
+	// to resolveTarget/formula instantiation. The call will fail downstream
+	// (rig doesn't exist in test env) but must get PAST the guard.
+	err = runSling(nil, []string{"test-formula", "gastown/polecats/toast"})
+	if err == nil {
+		t.Fatal("expected error from downstream (resolve), got nil (idempotent no-op was incorrectly triggered)")
+	}
+	// Must NOT be the "already hooked" error — that means the guard blocked formula execution
+	if strings.Contains(err.Error(), "already") && strings.Contains(err.Error(), "hooked") {
+		t.Fatalf("got 'already hooked' error in formula-on-bead mode; guard should have been bypassed: %v", err)
+	}
+	// Must NOT be "formula not found" — that would mean the bd stub is broken
+	if strings.Contains(err.Error(), "formula") && strings.Contains(err.Error(), "not found") {
+		t.Fatalf("got 'formula not found' error; bd stub should handle formula subcommand: %v", err)
+	}
+}
+
+// TestSlingIdempotentNoOp_PinnedSelfDot verifies that slinging a pinned bead
+// with "." (self-target) returns a no-op when self-resolution matches the assignee.
+// Uses mayor role since polecats cannot sling.
+func TestSlingIdempotentNoOp_PinnedSelfDot(t *testing.T) {
+	townRoot := t.TempDir()
+
+	if err := os.MkdirAll(filepath.Join(townRoot, "mayor", "rig"), 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	binDir := filepath.Join(townRoot, "bin")
+	if err := os.MkdirAll(binDir, 0755); err != nil {
+		t.Fatalf("mkdir binDir: %v", err)
+	}
+	// Bead is pinned to "mayor/" — matches the mayor self-resolution.
+	bdScript := `#!/bin/sh
+set -e
+cmd="$1"
+shift || true
+case "$cmd" in
+  show)
+    echo '[{"title":"Test issue","status":"pinned","assignee":"mayor/","description":""}]'
+    ;;
+  update)
+    exit 0
+    ;;
+esac
+exit 0
+`
+	bdScriptWindows := `@echo off
+set "cmd=%1"
+if "%cmd%"=="show" (
+  echo [{"title":"Test issue","status":"pinned","assignee":"mayor/","description":""}]
+  exit /b 0
+)
+exit /b 0
+`
+	_ = writeBDStub(t, binDir, bdScript, bdScriptWindows)
+
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv(EnvGTRole, "mayor")
+	t.Setenv("GT_CREW", "")
+	t.Setenv("GT_POLECAT", "")
+	t.Setenv("TMUX_PANE", "")
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(cwd) })
+	if err := os.Chdir(filepath.Join(townRoot, "mayor", "rig")); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+
+	// Pinned beads don't check isHookedAgentDead, but stub it for safety
+	prevDeadFn := isHookedAgentDeadFn
+	t.Cleanup(func() { isHookedAgentDeadFn = prevDeadFn })
+	isHookedAgentDeadFn = func(assignee string) bool { return false }
+
+	prevForce := slingForce
+	prevNoConvoy := slingNoConvoy
+	t.Cleanup(func() {
+		slingForce = prevForce
+		slingNoConvoy = prevNoConvoy
+	})
+	slingForce = false
+	slingNoConvoy = true
+
+	// Sling pinned bead with dot target — self-resolution as mayor returns
+	// "mayor/" which normalizes to "mayor", matching the assignee. Should no-op.
+	err = runSling(nil, []string{"gt-test-pinned-dot", "."})
+	if err != nil {
+		t.Fatalf("expected no-op nil return for pinned bead with dot target, got error: %v", err)
 	}
 }

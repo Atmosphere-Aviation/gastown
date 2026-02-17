@@ -77,15 +77,17 @@ Examples:
 }
 
 var crewListCmd = &cobra.Command{
-	Use:   "list",
+	Use:   "list [rig]",
 	Short: "List crew workspaces with status",
+	Args:  cobra.MaximumNArgs(1),
 	Long: `List all crew workspaces in a rig with their status.
 
 Shows git branch, session state, and git status for each workspace.
 
 Examples:
   gt crew list                    # List in current rig
-  gt crew list --rig greenplace   # List in specific rig
+  gt crew list greenplace         # List in specific rig (positional)
+  gt crew list --rig greenplace   # List in specific rig (flag)
   gt crew list --all              # List in all rigs
   gt crew list --json             # JSON output`,
 	RunE: runCrewList,
@@ -248,15 +250,23 @@ Examples:
 }
 
 var crewNextCmd = &cobra.Command{
-	Use:    "next",
-	Short:  "Switch to next crew session in same rig",
+	Use:   "next",
+	Short: "Switch to next crew session in same rig",
+	Long: `Switch to the next crew tmux session within the same rig.
+
+Used internally by tmux keybindings for quick session cycling.
+Pass --session to specify the current tmux session name.`,
 	Hidden: true, // Internal command for tmux keybindings
 	RunE:   runCrewNext,
 }
 
 var crewPrevCmd = &cobra.Command{
-	Use:    "prev",
-	Short:  "Switch to previous crew session in same rig",
+	Use:   "prev",
+	Short: "Switch to previous crew session in same rig",
+	Long: `Switch to the previous crew tmux session within the same rig.
+
+Used internally by tmux keybindings for quick session cycling.
+Pass --session to specify the current tmux session name.`,
 	Hidden: true, // Internal command for tmux keybindings
 	RunE:   runCrewPrev,
 }
