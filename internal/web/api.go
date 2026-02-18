@@ -573,9 +573,9 @@ func (h *APIHandler) handleOptions(w http.ResponseWriter, r *http.Request) {
 	// Fetch convoys
 	go func() {
 		defer wg.Done()
-		if output, err := h.runGtCommand(r.Context(), 3*time.Second, []string{"convoy", "list"}); err == nil {
+		if output, err := h.runGtCommand(r.Context(), 3*time.Second, []string{"convoy", "list", "--json"}); err == nil {
 			mu.Lock()
-			resp.Convoys = parseConvoyListOutput(output)
+			resp.Convoys = parseConvoyListJSON(output)
 			mu.Unlock()
 		} else {
 			log.Printf("warning: handleOptions: convoy list: %v", err)
@@ -668,22 +668,21 @@ func parseRigListOutput(output string) []string {
 	return rigs
 }
 
-// parseConvoyListOutput extracts convoy IDs from text output.
-func parseConvoyListOutput(output string) []string {
-	var convoys []string
-	lines := strings.Split(output, "\n")
-	for _, line := range lines {
-		// Look for lines that start with convoy ID pattern
-		trimmed := strings.TrimSpace(line)
-		if trimmed != "" && !strings.HasPrefix(trimmed, "Convoy") && !strings.HasPrefix(trimmed, "No ") {
-			// Try to extract the first word as convoy ID
-			parts := strings.Fields(trimmed)
-			if len(parts) > 0 {
-				convoys = append(convoys, parts[0])
-			}
+// parseConvoyListJSON extracts convoy IDs from JSON output of "gt convoy list --json".
+func parseConvoyListJSON(jsonStr string) []string {
+	var convoys []struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal([]byte(jsonStr), &convoys); err != nil {
+		return nil
+	}
+	ids := make([]string, 0, len(convoys))
+	for _, c := range convoys {
+		if c.ID != "" {
+			ids = append(ids, c.ID)
 		}
 	}
-	return convoys
+	return ids
 }
 
 // parseHooksListOutput extracts bead names from hooks list output.
@@ -1622,7 +1621,7 @@ func (h *APIHandler) detectCrewState(ctx context.Context, sessionName, hook stri
 
 		// Calculate activity age
 		activityAge := time.Since(time.Unix(activityUnix, 0))
-		lastActive := formatCrewActivityAge(activityAge)
+		lastActive := formatTimestamp(time.Unix(activityUnix, 0))
 
 		// Check if Claude is running in the session
 		isClaudeRunning := h.isClaudeRunningInSession(ctx, sessionName)
@@ -1724,20 +1723,6 @@ func determineCrewState(activityAge time.Duration, isClaudeRunning bool, hook st
 		return "spinning" // Still probably working
 	default:
 		return "questions" // Running but no activity = likely waiting for input
-	}
-}
-
-// formatCrewActivityAge formats activity age for display.
-func formatCrewActivityAge(age time.Duration) string {
-	switch {
-	case age < time.Minute:
-		return "just now"
-	case age < time.Hour:
-		return fmt.Sprintf("%dm ago", int(age.Minutes()))
-	case age < 24*time.Hour:
-		return fmt.Sprintf("%dh ago", int(age.Hours()))
-	default:
-		return fmt.Sprintf("%dd ago", int(age.Hours()/24))
 	}
 }
 

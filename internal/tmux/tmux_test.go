@@ -553,31 +553,31 @@ func TestGetPaneCommand_MultiPane(t *testing.T) {
 	}
 }
 
-func TestHasChildWithNames(t *testing.T) {
-	// Test the hasChildWithNames helper function directly
+func TestHasDescendantWithNames(t *testing.T) {
+	// Test the hasDescendantWithNames helper function directly
 
 	// Test with a definitely nonexistent PID
-	got := hasChildWithNames("999999999", []string{"node", "claude"})
+	got := hasDescendantWithNames("999999999", []string{"node", "claude"}, 0)
 	if got {
-		t.Error("hasChildWithNames should return false for nonexistent PID")
+		t.Error("hasDescendantWithNames should return false for nonexistent PID")
 	}
 
 	// Test with empty names slice - should always return false
-	got = hasChildWithNames("1", []string{})
+	got = hasDescendantWithNames("1", []string{}, 0)
 	if got {
-		t.Error("hasChildWithNames should return false for empty names slice")
+		t.Error("hasDescendantWithNames should return false for empty names slice")
 	}
 
 	// Test with nil names slice - should always return false
-	got = hasChildWithNames("1", nil)
+	got = hasDescendantWithNames("1", nil, 0)
 	if got {
-		t.Error("hasChildWithNames should return false for nil names slice")
+		t.Error("hasDescendantWithNames should return false for nil names slice")
 	}
 
 	// Test with PID 1 (init/launchd) - should have children but not specific agent processes
-	got = hasChildWithNames("1", []string{"node", "claude"})
+	got = hasDescendantWithNames("1", []string{"node", "claude"}, 0)
 	if got {
-		t.Logf("hasChildWithNames(\"1\", [node,claude]) = true - init has matching child?")
+		t.Logf("hasDescendantWithNames(\"1\", [node,claude]) = true - init has matching child?")
 	}
 }
 
@@ -920,12 +920,18 @@ func TestCleanupOrphanedSessions(t *testing.T) {
 		t.Skip("tmux not installed")
 	}
 
+	// Local predicate matching gt-/hq- prefixes (sufficient for test fixtures;
+	// avoids circular import of session package).
+	isTestGTSession := func(s string) bool {
+		return strings.HasPrefix(s, "gt-") || strings.HasPrefix(s, "hq-")
+	}
+
 	tm := NewTmux()
 
 	// Additional safety check: Skip if production GT sessions exist.
 	sessions, _ := tm.ListSessions()
 	for _, sess := range sessions {
-		if (strings.HasPrefix(sess, "gt-") || strings.HasPrefix(sess, "hq-")) &&
+		if isTestGTSession(sess) &&
 			sess != "gt-test-cleanup-rig" && sess != "hq-test-cleanup" {
 			t.Skip("Skipping: production GT sessions exist (would be killed by CleanupOrphanedSessions)")
 		}
@@ -970,7 +976,7 @@ func TestCleanupOrphanedSessions(t *testing.T) {
 	}
 
 	// Run cleanup
-	cleaned, err := tm.CleanupOrphanedSessions()
+	cleaned, err := tm.CleanupOrphanedSessions(isTestGTSession)
 	if err != nil {
 		t.Fatalf("CleanupOrphanedSessions: %v", err)
 	}
@@ -1012,18 +1018,23 @@ func TestCleanupOrphanedSessions_NoSessions(t *testing.T) {
 		t.Skip("tmux not installed")
 	}
 
+	// Local predicate matching gt-/hq- prefixes (avoids circular import).
+	isTestGTSession := func(s string) bool {
+		return strings.HasPrefix(s, "gt-") || strings.HasPrefix(s, "hq-")
+	}
+
 	tm := NewTmux()
 
 	// Additional safety check: Skip if production GT sessions exist.
 	sessions, _ := tm.ListSessions()
 	for _, sess := range sessions {
-		if strings.HasPrefix(sess, "gt-") || strings.HasPrefix(sess, "hq-") {
+		if isTestGTSession(sess) {
 			t.Skip("Skipping: GT sessions exist (CleanupOrphanedSessions would kill them)")
 		}
 	}
 
 	// Running cleanup with no orphaned GT sessions should return 0, no error
-	cleaned, err := tm.CleanupOrphanedSessions()
+	cleaned, err := tm.CleanupOrphanedSessions(isTestGTSession)
 	if err != nil {
 		t.Fatalf("CleanupOrphanedSessions: %v", err)
 	}

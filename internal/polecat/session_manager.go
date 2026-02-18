@@ -18,6 +18,7 @@ import (
 	"github.com/steveyegge/gastown/internal/git"
 	"github.com/steveyegge/gastown/internal/rig"
 	"github.com/steveyegge/gastown/internal/runtime"
+	"github.com/steveyegge/gastown/internal/style"
 	"github.com/steveyegge/gastown/internal/session"
 	"github.com/steveyegge/gastown/internal/tmux"
 )
@@ -29,7 +30,6 @@ func debugSession(context string, err error) {
 	}
 }
 
-const bdCommandTimeout = 30 * time.Second
 
 // Session errors
 var (
@@ -335,7 +335,7 @@ func (m *SessionManager) Start(polecat string, opts SessionStartOptions) error {
 	if opts.Issue != "" {
 		agentID := fmt.Sprintf("%s/polecats/%s", m.rig.Name, polecat)
 		if err := m.hookIssue(opts.Issue, agentID, workDir); err != nil {
-			fmt.Printf("Warning: could not hook issue %s: %v\n", opts.Issue, err)
+			style.PrintWarning("could not hook issue %s: %v", opts.Issue, err)
 		}
 	}
 
@@ -636,7 +636,7 @@ func (m *SessionManager) resolveBeadsDir(issueID, fallbackDir string) string {
 func (m *SessionManager) validateIssue(issueID, workDir string) error {
 	bdWorkDir := m.resolveBeadsDir(issueID, workDir)
 
-	ctx, cancel := context.WithTimeout(context.Background(), bdCommandTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), constants.BdCommandTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "bd", "show", issueID, "--json") //nolint:gosec // G204: bd is a trusted internal tool
 	cmd.Dir = bdWorkDir
@@ -664,7 +664,7 @@ func (m *SessionManager) validateIssue(issueID, workDir string) error {
 func (m *SessionManager) hookIssue(issueID, agentID, workDir string) error {
 	bdWorkDir := m.resolveBeadsDir(issueID, workDir)
 
-	ctx, cancel := context.WithTimeout(context.Background(), bdCommandTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), constants.BdCommandTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "bd", "update", issueID, "--status=hooked", "--assignee="+agentID) //nolint:gosec // G204: bd is a trusted internal tool
 	cmd.Dir = bdWorkDir
