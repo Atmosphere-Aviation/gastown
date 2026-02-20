@@ -97,7 +97,15 @@ func runMqSubmit(cmd *cobra.Command, args []string) error {
 	// When gt is invoked via shell alias (cd ~/gt && gt), cwd is the town
 	// root, not the polecat's worktree. Reconstruct actual path.
 	if cwd == townRoot {
-		if polecatName := os.Getenv("GT_POLECAT"); polecatName != "" && rigName != "" {
+		// Gate polecat cwd switch on GT_ROLE: coordinators may have stale GT_POLECAT.
+		isPolecat := false
+		if role := os.Getenv("GT_ROLE"); role != "" {
+			parsedRole, _, _ := parseRoleString(role)
+			isPolecat = parsedRole == RolePolecat
+		} else {
+			isPolecat = os.Getenv("GT_POLECAT") != ""
+		}
+		if polecatName := os.Getenv("GT_POLECAT"); polecatName != "" && rigName != "" && isPolecat {
 			polecatClone := filepath.Join(townRoot, rigName, "polecats", polecatName, rigName)
 			if _, err := os.Stat(polecatClone); err == nil {
 				cwd = polecatClone
@@ -225,7 +233,7 @@ func runMqSubmit(cmd *cobra.Command, args []string) error {
 		}
 
 		// Nudge refinery to pick up the new MR
-		nudgeRefinery(rigName, fmt.Sprintf("MR submitted: %s branch=%s", mrIssue.ID, branch))
+		nudgeRefinery(rigName, "MERGE_READY received - check inbox for pending work")
 	}
 
 	// Success output

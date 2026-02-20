@@ -236,6 +236,114 @@ func makeTestGitRepo(t *testing.T) string {
 	return dir
 }
 
+// TestHandoffPolecatEnvCheck verifies that the polecat guard in runHandoff uses
+// GT_ROLE as the authoritative check, so coordinators with a stale GT_POLECAT
+// in their environment are not redirected to gt done (GH #1707).
+func TestHandoffPolecatEnvCheck(t *testing.T) {
+	tests := []struct {
+		name      string
+		role      string
+		polecat   string
+		wantBlock bool
+	}{
+		{
+			name:      "bare polecat role is redirected",
+			role:      "polecat",
+			polecat:   "alpha",
+			wantBlock: true,
+		},
+		{
+			name:      "compound polecat role is redirected",
+			role:      "gastown/polecats/Toast",
+			polecat:   "Toast",
+			wantBlock: true,
+		},
+		{
+			name:      "mayor with stale GT_POLECAT is NOT redirected",
+			role:      "mayor",
+			polecat:   "alpha",
+			wantBlock: false,
+		},
+		{
+			name:      "compound witness with stale GT_POLECAT is NOT redirected",
+			role:      "gastown/witness",
+			polecat:   "alpha",
+			wantBlock: false,
+		},
+		{
+			name:      "crew with stale GT_POLECAT is NOT redirected",
+			role:      "crew",
+			polecat:   "alpha",
+			wantBlock: false,
+		},
+		{
+			name:      "compound crew with stale GT_POLECAT is NOT redirected",
+			role:      "gastown/crew/den",
+			polecat:   "alpha",
+			wantBlock: false,
+		},
+		{
+			name:      "no GT_ROLE with GT_POLECAT set is redirected",
+			role:      "",
+			polecat:   "alpha",
+			wantBlock: true,
+		},
+		{
+			name:      "no GT_ROLE and no GT_POLECAT is not redirected",
+			role:      "",
+			polecat:   "",
+			wantBlock: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("GT_ROLE", tt.role)
+			t.Setenv("GT_POLECAT", tt.polecat)
+			// Ensure deterministic non-tmux execution so the non-polecat
+			// paths fail predictably instead of triggering real side effects.
+			t.Setenv("TMUX", "")
+			t.Setenv("TMUX_PANE", "")
+
+			// Reset flags to avoid interference
+			origMessage := handoffMessage
+			origStdin := handoffStdin
+			origAuto := handoffAuto
+			defer func() {
+				handoffMessage = origMessage
+				handoffStdin = origStdin
+				handoffAuto = origAuto
+			}()
+			handoffMessage = ""
+			handoffStdin = false
+			handoffAuto = false
+
+			// The polecat path tries to exec "gt done" which will fail in tests.
+			// We capture stdout to detect the "Polecat detected" message, which
+			// confirms the polecat guard triggered. Non-polecat paths will fail
+			// later (missing tmux, etc.) without printing the polecat message.
+			var blocked bool
+			output := captureStdout(t, func() {
+				defer func() {
+					if r := recover(); r != nil {
+						// Panic means we got past the guard — not blocked
+					}
+				}()
+				runHandoff(handoffCmd, nil)
+			})
+			blocked = strings.Contains(output, "Polecat detected")
+
+			if blocked != tt.wantBlock {
+				if tt.wantBlock {
+					t.Errorf("expected polecat redirect but was not redirected (GT_ROLE=%q GT_POLECAT=%q)", tt.role, tt.polecat)
+				} else {
+					t.Errorf("unexpected polecat redirect with GT_ROLE=%q GT_POLECAT=%q; output: %s", tt.role, tt.polecat, output)
+				}
+			}
+		})
+	}
+}
+
 func TestWarnHandoffGitStatus(t *testing.T) {
 	origCwd, _ := os.Getwd()
 	t.Cleanup(func() { os.Chdir(origCwd) })
@@ -331,6 +439,60 @@ func TestWarnHandoffGitStatus(t *testing.T) {
 		})
 		if output != "" {
 			t.Errorf("expected no output with --no-git-check, got: %q", output)
+		}
+	})
+}
+
+func TestHandoffProcessNames(t *testing.T) {
+	t.Run("same-agent restart preserves GT_PROCESS_NAMES from env", func(t *testing.T) {
+		setupHandoffTestRegistry(t)
+
+		tmpTown := t.TempDir()
+		mayorDir := filepath.Join(tmpTown, "mayor")
+		os.MkdirAll(mayorDir, 0755)
+		os.WriteFile(filepath.Join(mayorDir, "town.json"), []byte(`{"name":"test"}`), 0644)
+
+		t.Setenv("GT_ROOT", tmpTown)
+		t.Setenv("GT_AGENT", "claude")
+		t.Setenv("GT_PROCESS_NAMES", "node,claude")
+		origCwd, _ := os.Getwd()
+		os.Chdir(os.TempDir())
+		t.Cleanup(func() { os.Chdir(origCwd) })
+
+		// Same-agent restart should preserve existing process names from env
+		cmd, err := buildRestartCommand("gt-crew-propane")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !strings.Contains(cmd, "GT_PROCESS_NAMES=node,claude") {
+			t.Errorf("expected GT_PROCESS_NAMES=node,claude preserved from env, got: %q", cmd)
+		}
+	})
+
+	t.Run("first boot without GT_PROCESS_NAMES computes from config", func(t *testing.T) {
+		setupHandoffTestRegistry(t)
+
+		tmpTown := t.TempDir()
+		mayorDir := filepath.Join(tmpTown, "mayor")
+		os.MkdirAll(mayorDir, 0755)
+		os.WriteFile(filepath.Join(mayorDir, "town.json"), []byte(`{"name":"test"}`), 0644)
+
+		t.Setenv("GT_ROOT", tmpTown)
+		t.Setenv("GT_AGENT", "claude")
+		// Explicitly clear GT_PROCESS_NAMES to simulate first boot
+		t.Setenv("GT_PROCESS_NAMES", "")
+		origCwd, _ := os.Getwd()
+		os.Chdir(os.TempDir())
+		t.Cleanup(func() { os.Chdir(origCwd) })
+
+		// No GT_PROCESS_NAMES in env — should compute from agent config
+		cmd, err := buildRestartCommand("gt-crew-propane")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		// Claude's default process names are "node,claude"
+		if !strings.Contains(cmd, "GT_PROCESS_NAMES=node,claude") {
+			t.Errorf("expected GT_PROCESS_NAMES=node,claude computed from config, got: %q", cmd)
 		}
 	})
 }

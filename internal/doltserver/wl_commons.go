@@ -110,7 +110,7 @@ CREATE TABLE IF NOT EXISTS wanted (
     status VARCHAR(32) DEFAULT 'open',
     effort_level VARCHAR(16) DEFAULT 'medium',
     evidence_url TEXT,
-    sandbox_required BOOLEAN DEFAULT FALSE,
+    sandbox_required TINYINT(1) DEFAULT 0,
     sandbox_scope JSON,
     sandbox_min_tier VARCHAR(32),
     created_at TIMESTAMP,
@@ -145,7 +145,8 @@ CREATE TABLE IF NOT EXISTS stamps (
     prev_stamp_hash VARCHAR(64),
     block_hash VARCHAR(64),
     hop_uri VARCHAR(512),
-    created_at TIMESTAMP
+    created_at TIMESTAMP,
+    CHECK (NOT(author = subject))
 );
 
 CREATE TABLE IF NOT EXISTS badges (
@@ -244,14 +245,6 @@ CALL DOLT_COMMIT('-m', 'wl post: %s');
 		esc(item.Title))
 
 	return doltSQLScriptWithRetry(townRoot, script)
-}
-
-// GetRigHandle returns the rig's handle for the posted_by field.
-func GetRigHandle(townRoot string) string {
-	if org := DoltHubOrg(); org != "" {
-		return org
-	}
-	return filepath.Base(townRoot)
 }
 
 // ClaimWanted updates a wanted item's status to claimed.
