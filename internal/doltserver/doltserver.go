@@ -29,6 +29,7 @@ package doltserver
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -44,6 +45,7 @@ import (
 	"syscall"
 	"time"
 
+	_ "github.com/go-sql-driver/mysql"
 	"github.com/gofrs/flock"
 	"github.com/steveyegge/gastown/internal/beads"
 	"github.com/steveyegge/gastown/internal/style"
@@ -137,6 +139,49 @@ var metadataMu sync.Map // map[string]*sync.Mutex
 func getMetadataMu(path string) *sync.Mutex {
 	mu, _ := metadataMu.LoadOrStore(path, &sync.Mutex{})
 	return mu.(*sync.Mutex)
+}
+
+// useMySQLClient returns true when Dolt SQL queries should use the MySQL
+// protocol client instead of shelling out to the dolt CLI. The MySQL client
+// avoids the com.apple.provenance xattr issue where macOS kills grandchild
+// processes spawned from sandboxed applications (e.g., Claude Code).
+// Set GT_DOLT_EXEC_MODE=1 to force the legacy exec.Command path.
+func useMySQLClient() bool {
+	return os.Getenv("GT_DOLT_EXEC_MODE") != "1"
+}
+
+// dbPool is a process-wide MySQL connection pool for Dolt queries.
+// Initialized once via sync.Once on first use.
+var (
+	dbPool     *sql.DB
+	dbPoolOnce sync.Once
+	dbPoolErr  error
+)
+
+// getDBPool returns a shared *sql.DB connection pool for the Dolt server.
+// The pool is created once and reused for the lifetime of the process.
+func getDBPool(config *Config) (*sql.DB, error) {
+	dbPoolOnce.Do(func() {
+		dsn := fmt.Sprintf("%s@tcp(%s)/?multiStatements=true&timeout=10s&readTimeout=15s&writeTimeout=15s",
+			config.userDSN(), config.HostPort())
+		dbPool, dbPoolErr = sql.Open("mysql", dsn)
+		if dbPoolErr != nil {
+			return
+		}
+		dbPool.SetMaxOpenConns(5)
+		dbPool.SetMaxIdleConns(2)
+		dbPool.SetConnMaxLifetime(5 * time.Minute)
+	})
+	return dbPool, dbPoolErr
+}
+
+// getDBPoolForDB returns a *sql.DB targeting a specific database.
+// Unlike getDBPool, this creates a new connection per call (not pooled)
+// because different callers may target different databases.
+func getDBPoolForDB(config *Config, dbName string) (*sql.DB, error) {
+	dsn := fmt.Sprintf("%s@tcp(%s)/%s?multiStatements=true&timeout=10s&readTimeout=15s&writeTimeout=15s",
+		config.userDSN(), config.HostPort(), dbName)
+	return sql.Open("mysql", dsn)
 }
 
 // Config holds Dolt server configuration.
@@ -1014,6 +1059,32 @@ func ListDatabases(townRoot string) ([]string, error) {
 
 // listDatabasesRemote queries SHOW DATABASES on a remote Dolt server.
 func listDatabasesRemote(config *Config) ([]string, error) {
+	if useMySQLClient() {
+		db, err := getDBPool(config)
+		if err != nil {
+			return nil, fmt.Errorf("mysql pool: %w", err)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		rows, err := db.QueryContext(ctx, "SHOW DATABASES")
+		if err != nil {
+			return nil, fmt.Errorf("SHOW DATABASES: %w", err)
+		}
+		defer rows.Close()
+		var databases []string
+		for rows.Next() {
+			var name string
+			if err := rows.Scan(&name); err != nil {
+				return nil, fmt.Errorf("scanning database name: %w", err)
+			}
+			if name != "information_schema" && name != "mysql" {
+				databases = append(databases, name)
+			}
+		}
+		return databases, rows.Err()
+	}
+
+	// Legacy exec.Command path (GT_DOLT_EXEC_MODE=1)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -1095,45 +1166,128 @@ func verifyDatabasesWithRetry(townRoot string, maxAttempts int) (served, missing
 			continue
 		}
 
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		cmd := buildDoltSQLCmd(ctx, config,
-			"-r", "json",
-			"-q", "SHOW DATABASES",
-		)
-
-		// Capture stderr separately so it doesn't corrupt JSON parsing.
-		// Dolt commonly writes deprecation/manifest warnings to stderr.
-		// See also daemon/dolt.go:listDatabases() which uses cmd.Output()
-		// for the same reason.
-		var stderrBuf bytes.Buffer
-		cmd.Stderr = &stderrBuf
-		output, queryErr := cmd.Output()
-		cancel()
-		if queryErr != nil {
-			stderrMsg := strings.TrimSpace(stderrBuf.String())
-			errDetail := strings.TrimSpace(string(output))
-			if stderrMsg != "" {
-				errDetail = errDetail + " (stderr: " + stderrMsg + ")"
-			}
-			lastErr = fmt.Errorf("querying SHOW DATABASES: %w (output: %s)", queryErr, errDetail)
-			if attempt < maxAttempts {
-				backoff := baseBackoff
-				for i := 1; i < attempt; i++ {
-					backoff *= 2
-					if backoff > maxBackoff {
-						backoff = maxBackoff
-						break
+		if useMySQLClient() {
+			db, poolErr := getDBPool(config)
+			if poolErr != nil {
+				lastErr = poolErr
+				if attempt < maxAttempts {
+					backoff := baseBackoff
+					for i := 1; i < attempt; i++ {
+						backoff *= 2
+						if backoff > maxBackoff {
+							backoff = maxBackoff
+							break
+						}
 					}
+					time.Sleep(backoff)
 				}
-				time.Sleep(backoff)
+				continue
 			}
-			continue
-		}
+			queryCtx, queryCancel := context.WithTimeout(context.Background(), 10*time.Second)
+			rows, queryErr := db.QueryContext(queryCtx, "SHOW DATABASES")
+			if queryErr != nil {
+				queryCancel()
+				lastErr = fmt.Errorf("SHOW DATABASES: %w", queryErr)
+				if attempt < maxAttempts {
+					backoff := baseBackoff
+					for i := 1; i < attempt; i++ {
+						backoff *= 2
+						if backoff > maxBackoff {
+							backoff = maxBackoff
+							break
+						}
+					}
+					time.Sleep(backoff)
+				}
+				continue
+			}
+			var serverDBs []string
+			for rows.Next() {
+				var name string
+				if scanErr := rows.Scan(&name); scanErr != nil {
+					rows.Close()
+					queryCancel()
+					lastErr = fmt.Errorf("scanning database name: %w", scanErr)
+					break
+				}
+				if !IsSystemDatabase(name) {
+					serverDBs = append(serverDBs, name)
+				}
+			}
+			rows.Close()
+			queryCancel()
+			if lastErr != nil {
+				if attempt < maxAttempts {
+					backoff := baseBackoff
+					for i := 1; i < attempt; i++ {
+						backoff *= 2
+						if backoff > maxBackoff {
+							backoff = maxBackoff
+							break
+						}
+					}
+					time.Sleep(backoff)
+				}
+				continue
+			}
+			if rowErr := rows.Err(); rowErr != nil {
+				lastErr = rowErr
+				if attempt < maxAttempts {
+					backoff := baseBackoff
+					for i := 1; i < attempt; i++ {
+						backoff *= 2
+						if backoff > maxBackoff {
+							backoff = maxBackoff
+							break
+						}
+					}
+					time.Sleep(backoff)
+				}
+				continue
+			}
+			served = serverDBs
+		} else {
+			// Legacy exec.Command path (GT_DOLT_EXEC_MODE=1)
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			cmd := buildDoltSQLCmd(ctx, config,
+				"-r", "json",
+				"-q", "SHOW DATABASES",
+			)
 
-		var parseErr error
-		served, parseErr = parseShowDatabases(output)
-		if parseErr != nil {
-			return nil, nil, fmt.Errorf("parsing SHOW DATABASES output: %w", parseErr)
+			// Capture stderr separately so it doesn't corrupt JSON parsing.
+			// Dolt commonly writes deprecation/manifest warnings to stderr.
+			// See also daemon/dolt.go:listDatabases() which uses cmd.Output()
+			// for the same reason.
+			var stderrBuf bytes.Buffer
+			cmd.Stderr = &stderrBuf
+			output, queryErr := cmd.Output()
+			cancel()
+			if queryErr != nil {
+				stderrMsg := strings.TrimSpace(stderrBuf.String())
+				errDetail := strings.TrimSpace(string(output))
+				if stderrMsg != "" {
+					errDetail = errDetail + " (stderr: " + stderrMsg + ")"
+				}
+				lastErr = fmt.Errorf("querying SHOW DATABASES: %w (output: %s)", queryErr, errDetail)
+				if attempt < maxAttempts {
+					backoff := baseBackoff
+					for i := 1; i < attempt; i++ {
+						backoff *= 2
+						if backoff > maxBackoff {
+							backoff = maxBackoff
+							break
+						}
+					}
+					time.Sleep(backoff)
+				}
+				continue
+			}
+
+			var parseErr error
+			served, parseErr = parseShowDatabases(output)
+			if parseErr != nil {
+				return nil, nil, fmt.Errorf("parsing SHOW DATABASES output: %w", parseErr)
+			}
 		}
 
 		// Compare against filesystem databases.
@@ -1928,8 +2082,21 @@ func FindOrCreateRigBeadsDir(townRoot, rigName string) (string, error) {
 func GetActiveConnectionCount(townRoot string) (int, error) {
 	config := DefaultConfig(townRoot)
 
-	// Use dolt sql-client to query the server with a timeout to prevent
-	// hanging indefinitely if the Dolt server is unresponsive.
+	if useMySQLClient() {
+		db, err := getDBPool(config)
+		if err != nil {
+			return 0, fmt.Errorf("mysql pool: %w", err)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		var count int
+		if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM information_schema.PROCESSLIST").Scan(&count); err != nil {
+			return 0, fmt.Errorf("querying connection count: %w", err)
+		}
+		return count, nil
+	}
+
+	// Legacy exec.Command path (GT_DOLT_EXEC_MODE=1)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -2077,7 +2244,27 @@ func CheckReadOnly(townRoot string) (bool, error) {
 		return false, nil // Can't probe without a database
 	}
 
-	db := databases[0]
+	dbName := databases[0]
+
+	if useMySQLClient() {
+		dbConn, err := getDBPoolForDB(config, dbName)
+		if err != nil {
+			return false, fmt.Errorf("mysql pool for %s: %w", dbName, err)
+		}
+		defer dbConn.Close()
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		_, execErr := dbConn.ExecContext(ctx, "CREATE TABLE IF NOT EXISTS `__gt_health_probe` (v INT PRIMARY KEY); REPLACE INTO `__gt_health_probe` VALUES (1); DROP TABLE IF EXISTS `__gt_health_probe`")
+		if execErr != nil {
+			if IsReadOnlyError(execErr.Error()) {
+				return true, nil
+			}
+			return false, fmt.Errorf("write probe failed: %w", execErr)
+		}
+		return false, nil
+	}
+
+	// Legacy exec.Command path (GT_DOLT_EXEC_MODE=1)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
@@ -2085,7 +2272,7 @@ func CheckReadOnly(townRoot string) (bool, error) {
 	// If the server is in read-only mode, this will fail with a characteristic error.
 	query := fmt.Sprintf(
 		"USE `%s`; CREATE TABLE IF NOT EXISTS `__gt_health_probe` (v INT PRIMARY KEY); REPLACE INTO `__gt_health_probe` VALUES (1); DROP TABLE IF EXISTS `__gt_health_probe`",
-		db,
+		dbName,
 	)
 	cmd := buildDoltSQLCmd(ctx, config, "-q", query)
 
@@ -2203,6 +2390,22 @@ func doltSQLWithRecovery(townRoot, rigDB, query string) error {
 func MeasureQueryLatency(townRoot string) (time.Duration, error) {
 	config := DefaultConfig(townRoot)
 
+	if useMySQLClient() {
+		db, err := getDBPool(config)
+		if err != nil {
+			return 0, fmt.Errorf("mysql pool: %w", err)
+		}
+		start := time.Now()
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		var one int
+		if err := db.QueryRowContext(ctx, "SELECT 1").Scan(&one); err != nil {
+			return 0, fmt.Errorf("SELECT 1 failed: %w", err)
+		}
+		return time.Since(start), nil
+	}
+
+	// Legacy exec.Command path (GT_DOLT_EXEC_MODE=1)
 	start := time.Now()
 	ctx := context.Background()
 	cmd := buildDoltSQLCmd(ctx, config, "-q", "SELECT 1")
@@ -2286,6 +2489,19 @@ func moveDir(src, dest string) error {
 // a specific database. Used for server-level commands like CREATE DATABASE.
 func serverExecSQL(townRoot, query string) error {
 	config := DefaultConfig(townRoot)
+
+	if useMySQLClient() {
+		db, err := getDBPool(config)
+		if err != nil {
+			return fmt.Errorf("mysql pool: %w", err)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		_, err = db.ExecContext(ctx, query)
+		return err
+	}
+
+	// Legacy exec.Command path (GT_DOLT_EXEC_MODE=1)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
@@ -2341,6 +2557,20 @@ func waitForCatalog(townRoot, dbName string) error {
 // The USE prefix selects the database since --use-db is not available on all dolt versions.
 func doltSQL(townRoot, rigDB, query string) error {
 	config := DefaultConfig(townRoot)
+
+	if useMySQLClient() {
+		dbConn, err := getDBPoolForDB(config, rigDB)
+		if err != nil {
+			return fmt.Errorf("mysql pool for %s: %w", rigDB, err)
+		}
+		defer dbConn.Close()
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		_, err = dbConn.ExecContext(ctx, query)
+		return err
+	}
+
+	// Legacy exec.Command path (GT_DOLT_EXEC_MODE=1)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
@@ -2429,6 +2659,18 @@ func CommitServerWorkingSet(townRoot, rigDB, message string) error {
 func doltSQLScript(townRoot, script string) error {
 	config := DefaultConfig(townRoot)
 
+	if useMySQLClient() {
+		db, err := getDBPool(config)
+		if err != nil {
+			return fmt.Errorf("mysql pool: %w", err)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		_, err = db.ExecContext(ctx, script)
+		return err
+	}
+
+	// Legacy exec.Command path (GT_DOLT_EXEC_MODE=1)
 	tmpFile, err := os.CreateTemp("", "dolt-script-*.sql")
 	if err != nil {
 		return fmt.Errorf("creating temp SQL file: %w", err)
