@@ -255,7 +255,10 @@ func TestFormatStartupBeacon(t *testing.T) {
 				"deacon",
 				"<- mayor",
 				"cold-start",
-				"Check your hook and mail",
+				"Hook and mail status already injected at startup",
+				"handoff mail ID",
+			},
+			wantNot: []string{
 				"gt hook",
 				"gt mail inbox",
 			},
@@ -272,12 +275,13 @@ func TestFormatStartupBeacon(t *testing.T) {
 				"witness (rig: gastown)",
 				"<- self",
 				"handoff",
-				"Check your hook and mail",
-				"gt hook",
-				"gt mail inbox",
+				"Hook and mail status already injected at startup",
+				"handoff mail ID",
 			},
 			wantNot: []string{
 				"gastown/witness",
+				"gt hook",
+				"gt mail inbox",
 			},
 		},
 		{
@@ -361,7 +365,7 @@ func TestFormatStartupBeacon(t *testing.T) {
 			},
 		},
 		{
-			name: "attach topic includes hook/mail instructions",
+			name: "attach topic includes startup instructions",
 			cfg: BeaconConfig{
 				Recipient: "mayor",
 				Sender:    "human",
@@ -371,6 +375,10 @@ func TestFormatStartupBeacon(t *testing.T) {
 				"[GAS TOWN]",
 				"mayor",
 				"attach",
+				"Hook and mail status already injected at startup",
+				"handoff mail ID",
+			},
+			wantNot: []string{
 				"gt hook",
 				"gt mail inbox",
 			},
