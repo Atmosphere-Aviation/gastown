@@ -93,14 +93,13 @@ func FormatStartupBeacon(cfg BeaconConfig) string {
 		return beacon
 	}
 
-	// For handoff, cold-start, and attach, add explicit instructions so the agent knows
-	// what to do even if hooks haven't loaded CLAUDE.md yet
+	// For handoff, cold-start, and attach, add brief instructions.
+	// Hook and mail status are already injected by SessionStart hooks, so
+	// don't repeat those commands here — they're redundant.
 	if cfg.Topic == "handoff" || cfg.Topic == "cold-start" || cfg.Topic == "attach" {
-		beacon += "\n\nCheck your hook and mail, then act on the hook if present:\n" +
-			"1. `" + cli.Name() + " hook` - shows hooked work (if any)\n" +
-			"2. `" + cli.Name() + " mail inbox` - check for messages\n" +
-			"3. If work is hooked → execute it immediately\n" +
-			"4. If nothing hooked → wait for instructions"
+		beacon += "\n\nHook and mail status already injected at startup. " +
+			"If a handoff mail ID is referenced in the system prompt, read it. " +
+			"Then execute hooked work or await instructions."
 	}
 
 	// For assigned, tell agent to prime then work on the hook.
