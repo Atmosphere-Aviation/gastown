@@ -3,6 +3,7 @@
 package polecat
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"math/rand/v2"
@@ -22,8 +23,9 @@ import (
 	"github.com/steveyegge/gastown/internal/git"
 	"github.com/steveyegge/gastown/internal/rig"
 	"github.com/steveyegge/gastown/internal/runtime"
-	"github.com/steveyegge/gastown/internal/style"
 	"github.com/steveyegge/gastown/internal/session"
+	"github.com/steveyegge/gastown/internal/style"
+	"github.com/steveyegge/gastown/internal/telemetry"
 	"github.com/steveyegge/gastown/internal/tmux"
 	"github.com/steveyegge/gastown/internal/workspace"
 )
@@ -601,7 +603,8 @@ func (m *Manager) Add(name string) (*Polecat, error) {
 // AddWithOptions creates a new polecat with the specified options.
 // This allows setting hook_bead atomically at creation time, avoiding
 // cross-beads routing issues when slinging work to new polecats.
-func (m *Manager) AddWithOptions(name string, opts AddOptions) (*Polecat, error) {
+func (m *Manager) AddWithOptions(name string, opts AddOptions) (_ *Polecat, retErr error) {
+	defer func() { telemetry.RecordPolecatSpawn(context.Background(), name, retErr) }()
 	// Acquire per-polecat file lock to prevent concurrent Add/Remove/Repair races
 	fl, err := m.lockPolecat(name)
 	if err != nil {
@@ -808,7 +811,8 @@ func (m *Manager) Remove(name string, force bool) error {
 //
 // ZFC #10: Uses cleanup_status from agent bead if available (polecat self-report),
 // falls back to git check for backward compatibility.
-func (m *Manager) RemoveWithOptions(name string, force, nuclear, selfNuke bool) error {
+func (m *Manager) RemoveWithOptions(name string, force, nuclear, selfNuke bool) (retErr error) {
+	defer func() { telemetry.RecordPolecatRemove(context.Background(), name, retErr) }()
 	// Acquire per-polecat file lock to prevent concurrent Remove races
 	fl, err := m.lockPolecat(name)
 	if err != nil {
@@ -1490,11 +1494,28 @@ func (m *Manager) List() ([]*Polecat, error) {
 	return polecats, nil
 }
 
+// FindIdlePolecat returns the first idle polecat in the rig, or nil if none.
+// Idle polecats have completed their work and have a preserved sandbox (worktree)
+// that can be reused by gt sling without creating a new worktree.
+// Persistent polecat model (gt-4ac).
+func (m *Manager) FindIdlePolecat() (*Polecat, error) {
+	polecats, err := m.List()
+	if err != nil {
+		return nil, err
+	}
+	for _, p := range polecats {
+		if p.State == StateIdle {
+			return p, nil
+		}
+	}
+	return nil, nil
+}
+
 // Get returns a specific polecat by name.
 // State is derived from beads assignee field + tmux session state:
 // - If an issue is assigned to this polecat: StateWorking
 // - If no issue but tmux session is running: StateWorking (session alive = still working)
-// - If no issue and no tmux session: StateDone (ready for cleanup)
+// - If no issue and no tmux session: StateIdle (persistent, ready for reuse)
 func (m *Manager) Get(name string) (*Polecat, error) {
 	if !m.exists(name) {
 		return nil, ErrPolecatNotFound
@@ -1533,8 +1554,11 @@ func (m *Manager) SetState(name string, state State) error {
 
 	switch state {
 	case StateWorking:
-		// Set issue to in_progress if there is one
-		if issue != nil {
+		// Set issue to in_progress if there is one.
+		// Skip if status is "hooked" — sling sets this, and changing it here causes
+		// merge conflicts when gt done runs. The polecat should claim work via gt prime,
+		// not have sling change status during spawn (gt-zecmc).
+		if issue != nil && issue.Status != "hooked" {
 			status := "in_progress"
 			if err := m.beads.Update(issue.ID, beads.UpdateOptions{Status: &status}); err != nil {
 				return fmt.Errorf("setting issue status: %w", err)
@@ -1653,6 +1677,18 @@ func (m *Manager) loadFromBeads(name string) (*Polecat, error) {
 		}, nil
 	}
 
+	// Persistent polecat model (gt-4ac): check agent_state for idle detection.
+	// An idle polecat has no hook_bead and agent_state="idle".
+	if agentErr == nil && fields != nil && fields.AgentState == "idle" {
+		return &Polecat{
+			Name:      name,
+			Rig:       m.rig.Name,
+			State:     StateIdle,
+			ClonePath: clonePath,
+			Branch:    branchName,
+		}, nil
+	}
+
 	// Fallback: Query beads for assigned issue (for polecats without agent beads
 	// or with empty hook_bead)
 	assignee := m.assigneeID(name)
@@ -1669,12 +1705,12 @@ func (m *Manager) loadFromBeads(name string) (*Polecat, error) {
 		}, nil
 	}
 
-	// Transient model: has issue = working, no issue = check tmux session.
+	// Persistent model: has issue = working, no issue = check tmux session.
 	// If tmux session is alive, the polecat is still actively working even
 	// if beads hasn't recorded an assignment yet (timing, query failure, etc.).
-	// Only mark as done when both beads says no issue AND no tmux session.
+	// No issue + no session = idle (persistent) rather than done.
 	// Fixes: gt-o01h4l (polecat list shows 'done' for running polecats)
-	state := StateDone
+	state := StateIdle
 	issueID := ""
 	if issue != nil {
 		issueID = issue.ID

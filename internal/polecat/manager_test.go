@@ -102,23 +102,6 @@ esac
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
-func TestStateIsActive(t *testing.T) {
-	tests := []struct {
-		state  State
-		active bool
-	}{
-		{StateWorking, true},
-		{StateDone, false},
-		{StateStuck, false},
-	}
-
-	for _, tt := range tests {
-		if got := tt.state.IsActive(); got != tt.active {
-			t.Errorf("%s.IsActive() = %v, want %v", tt.state, got, tt.active)
-		}
-	}
-}
-
 func TestStateIsWorking(t *testing.T) {
 	tests := []struct {
 		state   State
@@ -1361,9 +1344,10 @@ func TestAddWithOptions_RollbackReleasesName(t *testing.T) {
 		t.Fatalf("git commit: %v", err)
 	}
 
-	// Add origin remote but deliberately DON'T create origin/main ref.
-	// This will cause AddWithOptions to fail at ref validation, testing rollback.
-	cmd = exec.Command("git", "remote", "add", "origin", mayorRig)
+	// Add origin remote pointing to a nonexistent path so that fetch fails
+	// and origin/main is never created. This causes AddWithOptions to fail at
+	// ref validation, testing rollback.
+	cmd = exec.Command("git", "remote", "add", "origin", "/nonexistent/repo")
 	cmd.Dir = mayorRig
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git remote add: %v\n%s", err, out)

@@ -3,6 +3,7 @@ package tmux
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/steveyegge/gastown/internal/config"
 	"github.com/steveyegge/gastown/internal/constants"
+	"github.com/steveyegge/gastown/internal/telemetry"
 )
 
 // sessionNudgeLocks serializes nudges to the same session.
@@ -218,10 +220,15 @@ func (t *Tmux) EnsureSessionFresh(name, workDir string) error {
 	return err
 }
 
-// KillSession terminates a tmux session.
-func (t *Tmux) KillSession(name string) error {
-	_, err := t.run("kill-session", "-t", name)
-	return err
+// KillSession terminates a tmux session. Idempotent: returns nil if the
+// session is already gone or there is no tmux server.
+func (t *Tmux) KillSession(name string) (retErr error) {
+	defer func() { telemetry.RecordSessionStop(context.Background(), name, retErr) }()
+	_, retErr = t.run("kill-session", "-t", name)
+	if retErr == ErrSessionNotFound || retErr == ErrNoServer {
+		retErr = nil
+	}
+	return retErr
 }
 
 // processKillGracePeriod is how long to wait after SIGTERM before sending SIGKILL.
@@ -762,7 +769,8 @@ func (t *Tmux) SendKeys(session, keys string) error {
 // SendKeysDebounced sends keystrokes with a configurable delay before Enter.
 // The debounceMs parameter controls how long to wait after paste before sending Enter.
 // This prevents race conditions where Enter arrives before paste is processed.
-func (t *Tmux) SendKeysDebounced(session, keys string, debounceMs int) error {
+func (t *Tmux) SendKeysDebounced(session, keys string, debounceMs int) (retErr error) {
+	defer func() { telemetry.RecordPromptSend(context.Background(), session, keys, debounceMs, retErr) }()
 	// Send text using literal mode (-l) to handle special chars
 	if _, err := t.run("send-keys", "-t", session, "-l", keys); err != nil {
 		return err
@@ -772,8 +780,8 @@ func (t *Tmux) SendKeysDebounced(session, keys string, debounceMs int) error {
 		time.Sleep(time.Duration(debounceMs) * time.Millisecond)
 	}
 	// Send Enter separately - more reliable than appending to send-keys
-	_, err := t.run("send-keys", "-t", session, "Enter")
-	return err
+	_, retErr = t.run("send-keys", "-t", session, "Enter")
+	return retErr
 }
 
 // SendKeysRaw sends keystrokes without adding Enter.
@@ -1409,7 +1417,9 @@ func (t *Tmux) FindSessionByWorkDir(targetDir string, processNames []string) ([]
 
 // CapturePane captures the visible content of a pane.
 func (t *Tmux) CapturePane(session string, lines int) (string, error) {
-	return t.run("capture-pane", "-p", "-t", session, "-S", fmt.Sprintf("-%d", lines))
+	content, err := t.run("capture-pane", "-p", "-t", session, "-S", fmt.Sprintf("-%d", lines))
+	telemetry.RecordPaneRead(context.Background(), session, lines, len(content), err)
+	return content, err
 }
 
 // CapturePaneAll captures all scrollback history.
@@ -1694,12 +1704,9 @@ func (t *Tmux) WaitForShellReady(session string, timeout time.Duration) error {
 // Steady-State (use AI observation instead):
 //
 //	Once any AI agent is running, observation should be AI-to-AI:
-//	- Deacon starting polecats → use 'gt deacon pending' + AI analysis
+//	- Deacon monitoring polecats → use patrol formula + AI analysis
 //	- Deacon restarting → Mayor watches via 'gt peek'
 //	- Mayor restarting → Deacon watches via 'gt peek'
-//
-// See: gt deacon pending (ZFC-compliant AI observation)
-// See: gt deacon trigger-pending (bootstrap mode, regex-based)
 
 // matchesPromptPrefix reports whether a captured pane line matches the
 // configured ready-prompt prefix. It normalizes non-breaking spaces
@@ -2083,7 +2090,7 @@ func (t *Tmux) isGTBinding(table, key string) bool {
 // no prior binding to avoid recursive wrapping on repeated calls.
 func (t *Tmux) getKeyBinding(table, key string) string {
 	// tmux list-keys -T <table> <key> outputs a line like:
-	//   bind-key -T prefix g if-shell "..." "run-shell 'gt agents'" ":"
+	//   bind-key -T prefix g if-shell "..." "run-shell 'gt agents menu'" ":"
 	// We need to extract just the command portion.
 	//
 	// Assumed format (tested with tmux 3.3+):
@@ -2247,7 +2254,7 @@ func (t *Tmux) SetFeedBinding(session string) error {
 }
 
 // SetAgentsBinding configures C-b g to open the agent switcher popup menu.
-// This runs `gt agents` which displays a tmux popup with all Gas Town agents.
+// This runs `gt agents menu` which displays a tmux popup with all Gas Town agents.
 //
 // IMPORTANT: This binding is conditional - it only runs for Gas Town sessions
 // (those matching a registered rig prefix or "hq-"). For non-GT sessions, the
@@ -2267,7 +2274,7 @@ func (t *Tmux) SetAgentsBinding(session string) error {
 	}
 	_, err := t.run("bind-key", "-T", "prefix", "g",
 		"if-shell", ifShell,
-		"run-shell 'gt agents'",
+		"run-shell 'gt agents menu'",
 		fallback)
 	return err
 }

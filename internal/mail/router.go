@@ -301,11 +301,13 @@ func parseGroupAddress(address string) *ParsedGroup {
 
 // agentBead represents an agent bead as returned by bd list --label=gt:agent.
 type agentBead struct {
-	ID          string `json:"id"`
-	Title       string `json:"title"`
-	Description string `json:"description"`
-	Status      string `json:"status"`
-	CreatedBy   string `json:"created_by"`
+	ID          string   `json:"id"`
+	Title       string   `json:"title"`
+	Description string   `json:"description"`
+	Status      string   `json:"status"`
+	CreatedBy   string   `json:"created_by"`
+	Type        string   `json:"issue_type"`
+	Labels      []string `json:"labels"`
 }
 
 // agentBeadToAddress converts an agent bead to a mail address.
@@ -699,6 +701,7 @@ func (r *Router) queryAgents(descContains string) []*agentBead {
 }
 
 // queryAgentsInDir queries agent beads in a specific beads directory with optional description filtering.
+// Queries both the issues and wisps tables, merging results.
 func (r *Router) queryAgentsInDir(beadsDir, descContains string) ([]*agentBead, error) {
 	args := []string{"list", "--label=gt:agent", "--json", "--limit=0"}
 
@@ -708,25 +711,68 @@ func (r *Router) queryAgentsInDir(beadsDir, descContains string) ([]*agentBead, 
 
 	ctx, cancel := bdReadCtx()
 	defer cancel()
-	stdout, err := runBdCommand(ctx, args, filepath.Dir(beadsDir), beadsDir)
-	if err != nil {
-		return nil, fmt.Errorf("querying agents in %s: %w", beadsDir, err)
-	}
 
+	// Query issues table (backward compat during migration)
+	stdout, issuesErr := runBdCommand(ctx, args, filepath.Dir(beadsDir), beadsDir)
+
+	// Also query wisps table for migrated agent beads (best-effort)
+	wispCtx, wispCancel := bdReadCtx()
+	defer wispCancel()
+	wispOut, _ := runBdCommand(wispCtx, []string{"mol", "wisp", "list", "--json"}, filepath.Dir(beadsDir), beadsDir)
+
+	// Merge results: collect agent beads from both sources
+	seenIDs := make(map[string]bool)
 	var agents []*agentBead
-	if err := json.Unmarshal(stdout, &agents); err != nil {
-		return nil, fmt.Errorf("parsing agent query result: %w", err)
+
+	// Parse wisps first (primary source after migration)
+	if len(wispOut) > 0 {
+		var wispAgents []*agentBead
+		if json.Unmarshal(wispOut, &wispAgents) == nil {
+			for _, agent := range wispAgents {
+				if isAgentBeadEntry(agent) {
+					seenIDs[agent.ID] = true
+					agents = append(agents, agent)
+				}
+			}
+		}
 	}
 
-	// Filter for open agents only (closed agents are inactive)
+	// Then issues (backward compat, skip duplicates)
+	if len(stdout) > 0 {
+		var issueAgents []*agentBead
+		if json.Unmarshal(stdout, &issueAgents) == nil {
+			for _, agent := range issueAgents {
+				if !seenIDs[agent.ID] {
+					agents = append(agents, agent)
+				}
+			}
+		}
+	} else if issuesErr != nil && len(agents) == 0 {
+		return nil, fmt.Errorf("querying agents in %s: %w", beadsDir, issuesErr)
+	}
+
+	// Filter for active agents (closed/deleted agents are inactive)
 	var active []*agentBead
 	for _, agent := range agents {
-		if agent.Status == "open" || agent.Status == "in_progress" {
+		if agent.Status == "open" || agent.Status == "in_progress" || agent.Status == "hooked" {
 			active = append(active, agent)
 		}
 	}
 
 	return active, nil
+}
+
+// isAgentBeadEntry checks if an agentBead entry is an actual agent bead.
+func isAgentBeadEntry(a *agentBead) bool {
+	if a.Type == "agent" {
+		return true
+	}
+	for _, l := range a.Labels {
+		if l == "gt:agent" {
+			return true
+		}
+	}
+	return false
 }
 
 // queryAgentsFromDir queries agent beads from a specific beads directory.
@@ -934,7 +980,7 @@ func (r *Router) sendToSingle(msg *Message) error {
 	// Add actor for attribution (sender identity)
 	args = append(args, "--actor", msg.From)
 
-	// Add --ephemeral flag for ephemeral messages (stored in single DB, filtered from JSONL export)
+	// Add --ephemeral flag for ephemeral messages (wisps, not synced to git)
 	if r.shouldBeWisp(msg) {
 		args = append(args, "--ephemeral")
 	}
@@ -1491,6 +1537,9 @@ func addressToAgentBeadID(address string) string {
 	case strings.HasPrefix(target, "crew/"):
 		crewName := strings.TrimPrefix(target, "crew/")
 		return session.CrewSessionName(rigPrefix, crewName)
+	case strings.HasPrefix(target, "polecats/"):
+		pcName := strings.TrimPrefix(target, "polecats/")
+		return session.PolecatSessionName(rigPrefix, pcName)
 	default:
 		return session.PolecatSessionName(rigPrefix, target)
 	}

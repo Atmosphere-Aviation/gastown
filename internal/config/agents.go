@@ -33,6 +33,9 @@ const (
 	AgentCopilot AgentPreset = "copilot"
 	// AgentPi is Pi Coding Agent (extension-based lifecycle).
 	AgentPi AgentPreset = "pi"
+	// AgentOmp is Oh My Pi (OMP) — Pi fork with hook-based lifecycle.
+	// Inspired by github.com/ProbabilityEngineer/pi-mono gastown integration.
+	AgentOmp AgentPreset = "omp"
 )
 
 // AgentPresetInfo contains the configuration details for an agent preset.
@@ -325,7 +328,7 @@ var builtinPresets = map[AgentPreset]*AgentPresetInfo{
 	AgentPi: {
 		Name:                AgentPi,
 		Command:             "pi",
-		Args:                []string{}, // Extension loaded via -e flag in town settings
+		Args:                []string{"-e", ".pi/extensions/gastown-hooks.js"},
 		ProcessNames:        []string{"pi", "node", "bun"}, // Pi runs as Node.js
 		SessionIDEnv:        "PI_SESSION_ID",
 		ResumeFlag:          "",    // No resume support yet
@@ -338,6 +341,25 @@ var builtinPresets = map[AgentPreset]*AgentPresetInfo{
 		NonInteractive: &NonInteractiveConfig{
 			PromptFlag: "-p",
 			OutputFlag: "--no-session",
+		},
+		// Pi's Node.js TUI takes several seconds to initialize before it can
+		// receive tmux input. Without a readiness delay, the startup nudge
+		// arrives before the TUI is ready and gets dropped silently.
+		ReadyDelayMs: 8000,
+	},
+	AgentOmp: {
+		Name:                AgentOmp,
+		Command:             "omp",
+		Args:                []string{"--hook", ".omp/hooks/gastown-hook.ts"},
+		ProcessNames:        []string{"omp", "node", "bun"},
+		SessionIDEnv:        "OMP_SESSION_ID",
+		SupportsHooks:       true,
+		HooksProvider:       "omp",
+		HooksDir:            ".omp/hooks",
+		HooksSettingsFile:   "gastown-hook.ts",
+		SupportsForkSession: false,
+		NonInteractive: &NonInteractiveConfig{
+			PromptFlag: "--prompt",
 		},
 	},
 }
@@ -369,13 +391,6 @@ func initRegistryLocked() {
 		globalRegistry.Agents[string(name)] = preset
 	}
 	registryInitialized = true
-}
-
-// ensureRegistry ensures the registry is initialized for read operations.
-func ensureRegistry() {
-	registryMu.Lock()
-	defer registryMu.Unlock()
-	initRegistryLocked()
 }
 
 // loadAgentRegistryFromPath loads agent definitions from a JSON file and merges with built-ins.
@@ -449,26 +464,26 @@ func LoadRigAgentRegistry(path string) error {
 // GetAgentPreset returns the preset info for a given agent name.
 // Returns nil if the preset is not found.
 func GetAgentPreset(name AgentPreset) *AgentPresetInfo {
-	ensureRegistry()
-	registryMu.RLock()
-	defer registryMu.RUnlock()
+	registryMu.Lock()
+	initRegistryLocked()
+	defer registryMu.Unlock()
 	return globalRegistry.Agents[string(name)]
 }
 
 // GetAgentPresetByName returns the preset info by string name.
 // Returns nil if not found, allowing caller to fall back to defaults.
 func GetAgentPresetByName(name string) *AgentPresetInfo {
-	ensureRegistry()
-	registryMu.RLock()
-	defer registryMu.RUnlock()
+	registryMu.Lock()
+	initRegistryLocked()
+	defer registryMu.Unlock()
 	return globalRegistry.Agents[name]
 }
 
 // ListAgentPresets returns all known agent preset names.
 func ListAgentPresets() []string {
-	ensureRegistry()
-	registryMu.RLock()
-	defer registryMu.RUnlock()
+	registryMu.Lock()
+	initRegistryLocked()
+	defer registryMu.Unlock()
 	names := make([]string, 0, len(globalRegistry.Agents))
 	for name := range globalRegistry.Agents {
 		names = append(names, name)
@@ -586,9 +601,9 @@ func GetProcessNames(agentName string) []string {
 //     and use its ProcessNames (custom agent using a known launcher).
 //  3. Fallback: [command] (fully custom binary).
 func ResolveProcessNames(agentName, command string) []string {
-	ensureRegistry()
-	registryMu.RLock()
-	defer registryMu.RUnlock()
+	registryMu.Lock()
+	initRegistryLocked()
+	defer registryMu.Unlock()
 
 	// Normalize command to basename for comparison. Commands may be
 	// path-resolved (e.g., "/home/user/.claude/local/claude" from
@@ -655,9 +670,9 @@ func (rc *RuntimeConfig) MergeWithPreset(preset AgentPreset) *RuntimeConfig {
 
 // IsKnownPreset checks if a string is a known agent preset name.
 func IsKnownPreset(name string) bool {
-	ensureRegistry()
-	registryMu.RLock()
-	defer registryMu.RUnlock()
+	registryMu.Lock()
+	initRegistryLocked()
+	defer registryMu.Unlock()
 	_, ok := globalRegistry.Agents[name]
 	return ok
 }
@@ -734,8 +749,8 @@ func ResetRegistryForTesting() {
 // RegisterAgentForTesting adds a custom agent preset to the registry.
 // The registry is initialized first if needed. Intended for test use only.
 func RegisterAgentForTesting(name string, info AgentPresetInfo) {
-	ensureRegistry()
 	registryMu.Lock()
+	initRegistryLocked()
 	defer registryMu.Unlock()
 	globalRegistry.Agents[name] = &info
 }

@@ -87,7 +87,8 @@ Git-backed issue tracking system that stores work state as structured data.
 
 - **Go 1.23+** - [go.dev/dl](https://go.dev/dl/)
 - **Git 2.25+** - for worktree support
-- **beads (bd) 0.52.0+** - [github.com/steveyegge/beads](https://github.com/steveyegge/beads)
+- **Dolt 1.82.4+** - [github.com/dolthub/dolt](https://github.com/dolthub/dolt)
+- **beads (bd) 0.55.4+** - [github.com/steveyegge/beads](https://github.com/steveyegge/beads)
 - **sqlite3** - for convoy database queries (usually pre-installed on macOS/Linux)
 - **tmux 3.0+** - recommended for full experience
 - **Claude Code CLI** (default runtime) - [claude.ai/code](https://claude.ai/code)
@@ -216,9 +217,9 @@ gt convoy list                         # Check progress
 
 **Best for:** Predefined, repeatable processes
 
-Formulas are TOML-defined workflows stored in `.beads/formulas/`.
+Formulas are TOML-defined workflows embedded in the `gt` binary (source in `internal/formula/formulas/`).
 
-**Example Formula** (`.beads/formulas/release.formula.toml`):
+**Example Formula** (`internal/formula/formulas/release.formula.toml`):
 
 ```toml
 description = "Standard release process"
@@ -372,7 +373,7 @@ bd mol list                 # List active instances
 
 ## Cooking Formulas
 
-Gas Town includes built-in formulas for common workflows. See `.beads/formulas/` for available recipes.
+Gas Town includes built-in formulas for common workflows. See `internal/formula/formulas/` for available recipes.
 
 ## Dashboard
 

@@ -3,11 +3,15 @@ package session
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
+
+	"github.com/steveyegge/gastown/internal/config"
 )
 
 // PrefixRegistry maps beads prefixes to rig names and vice versa.
@@ -95,16 +99,29 @@ func SetDefaultRegistry(r *PrefixRegistry) {
 	defaultRegistry = r
 }
 
-// InitRegistry populates the default registry from the town's rigs.json.
+// InitRegistry populates the default registry from the town's rigs.json and
+// loads the agent registry from settings/agents.json.
+// Both registries are loaded independently — a failure in one does not
+// prevent the other from loading.
 // Should be called early in the process lifecycle.
 // Safe to call multiple times; later calls replace earlier data.
 func InitRegistry(townRoot string) error {
+	var errs []error
+
 	r, err := BuildPrefixRegistryFromTown(townRoot)
 	if err != nil {
-		return err
+		errs = append(errs, fmt.Errorf("prefix registry: %w", err))
+	} else {
+		SetDefaultRegistry(r)
 	}
-	SetDefaultRegistry(r)
-	return nil
+
+	// Load agent registry so all entry points (CLI, daemon, witness) respect
+	// user-configured overrides like custom process_names.
+	if err := config.LoadAgentRegistry(config.DefaultAgentRegistryPath(townRoot)); err != nil {
+		errs = append(errs, fmt.Errorf("agent registry: %w", err))
+	}
+
+	return errors.Join(errs...)
 }
 
 // PrefixFor returns the beads prefix for a rig, using the default registry.
@@ -157,6 +174,25 @@ func BuildPrefixRegistryFromFile(path string) (*PrefixRegistry, error) {
 	}
 
 	return r, nil
+}
+
+// LegacyPrefixes are prefixes accepted as valid even when the registry is empty.
+// gt = default rig, bd = beads, hq = town-level HQ services, gthq = gastown HQ.
+var LegacyPrefixes = []string{"gt", "bd", "hq", "gthq"}
+
+// HasKnownPrefix returns true if s starts with a registered or legacy prefix
+// followed by "-". Use this instead of hand-rolling prefix checks so that
+// all call-sites agree on what constitutes a valid prefix.
+func HasKnownPrefix(s string) bool {
+	if defaultRegistry.HasPrefix(s) {
+		return true
+	}
+	for _, p := range LegacyPrefixes {
+		if strings.HasPrefix(s, p+"-") {
+			return true
+		}
+	}
+	return false
 }
 
 // HasPrefix returns true if the session name starts with a registered prefix followed by a dash.

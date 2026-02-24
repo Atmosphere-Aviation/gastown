@@ -240,7 +240,6 @@ func detectSessionState(ctx RoleContext) SessionState {
 	agentID := getAgentIdentity(ctx)
 	if agentID != "" {
 		b := beads.New(ctx.WorkDir)
-
 		// Primary: agent bead's hook_bead field (authoritative, set by bd slot set during sling)
 		agentBeadID := buildAgentBeadID(agentID, ctx.Role, ctx.TownRoot)
 		if agentBeadID != "" {

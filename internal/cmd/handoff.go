@@ -646,6 +646,26 @@ var claudeEnvVars = []string{
 	// AWS vars for Bedrock
 	"AWS_PROFILE",
 	"AWS_REGION",
+	// OTEL telemetry — propagate so Claude keeps sending metrics after handoff
+	// (tmux respawn-pane starts a fresh shell that doesn't inherit these)
+	"CLAUDE_CODE_ENABLE_TELEMETRY",
+	"OTEL_METRICS_EXPORTER",
+	"OTEL_METRIC_EXPORT_INTERVAL",
+	"OTEL_EXPORTER_OTLP_METRICS_ENDPOINT",
+	"OTEL_EXPORTER_OTLP_METRICS_PROTOCOL",
+	"OTEL_LOGS_EXPORTER",
+	"OTEL_EXPORTER_OTLP_LOGS_ENDPOINT",
+	"OTEL_EXPORTER_OTLP_LOGS_PROTOCOL",
+	"OTEL_LOG_TOOL_DETAILS",
+	"OTEL_LOG_TOOL_CONTENT",
+	"OTEL_LOG_USER_PROMPTS",
+	"OTEL_RESOURCE_ATTRIBUTES",
+	// bd telemetry — so `bd` calls inside Claude emit to VictoriaMetrics/Logs
+	"BD_OTEL_METRICS_URL",
+	"BD_OTEL_LOGS_URL",
+	// GT telemetry source vars — needed to recompute derived vars after handoff
+	"GT_OTEL_METRICS_URL",
+	"GT_OTEL_LOGS_URL",
 }
 
 // buildRestartCommand creates the command to run when respawning a session's pane.
@@ -670,6 +690,7 @@ func buildRestartCommand(sessionName string) (string, error) {
 		return "", fmt.Errorf("cannot parse session name %q: %w", sessionName, err)
 	}
 	gtRole := identity.GTRole()
+	simpleRole := config.ExtractSimpleRole(gtRole)
 
 	// Derive rigPath from session identity for --settings flag resolution
 	rigPath := ""
@@ -697,8 +718,10 @@ func buildRestartCommand(sessionName string) (string, error) {
 	// If so, preserve it across handoff by using the override variant.
 	// Fall back to tmux session environment if process env doesn't have it,
 	// since exec env vars may not propagate through all agent runtimes.
-	currentAgent := os.Getenv("GT_AGENT")
-	if currentAgent == "" {
+	currentAgent, agentInEnv := os.LookupEnv("GT_AGENT")
+	if !agentInEnv {
+		// GT_AGENT not in process env at all — try tmux session environment
+		// as fallback, since exec env vars may not propagate through all runtimes.
 		t := tmux.NewTmux()
 		if val, err := t.GetEnvironment(sessionName, "GT_AGENT"); err == nil && val != "" {
 			currentAgent = val
@@ -711,6 +734,10 @@ func buildRestartCommand(sessionName string) (string, error) {
 		if err != nil {
 			return "", fmt.Errorf("resolving agent config: %w", err)
 		}
+	} else if simpleRole != "" {
+		// Preserve role_agents model selection across self-handoff by resolving
+		// runtime command via role-aware config (instead of default-agent lookup).
+		runtimeCmd = config.ResolveRoleAgentConfig(simpleRole, townRoot, rigPath).BuildCommandWithPrompt(beacon)
 	} else {
 		runtimeCmd = config.GetRuntimeCommandWithPrompt(rigPath, beacon)
 	}
@@ -719,7 +746,6 @@ func buildRestartCommand(sessionName string) (string, error) {
 	var exports []string
 	var agentEnv map[string]string // agent config Env (rc.toml [agents.X.env])
 	if gtRole != "" {
-		simpleRole := config.ExtractSimpleRole(gtRole)
 		// When GT_AGENT is set, resolve config with the override so we pick up
 		// the active agent's env (e.g., NODE_OPTIONS from [agents.X.env]).
 		// Otherwise, fall back to role-based resolution.
@@ -731,8 +757,10 @@ func buildRestartCommand(sessionName string) (string, error) {
 			} else {
 				runtimeConfig = config.ResolveRoleAgentConfig(simpleRole, townRoot, rigPath)
 			}
-		} else {
+		} else if simpleRole != "" {
 			runtimeConfig = config.ResolveRoleAgentConfig(simpleRole, townRoot, rigPath)
+		} else {
+			runtimeConfig = config.ResolveAgentConfig(townRoot, rigPath)
 		}
 		agentEnv = runtimeConfig.Env
 		exports = append(exports, "GT_ROLE="+gtRole)
@@ -1067,7 +1095,7 @@ func sendHandoffMail(subject, message string) (string, error) {
 		"create",
 		"--assignee", agentID,
 		"-d", message,
-		"--priority", "2",
+		"--priority", "1", // high — handoffs should float above normal mail
 		"--labels", labels + ",gt:message",
 		"--actor", agentID,
 		"--ephemeral", // Handoff mail is ephemeral
@@ -1075,9 +1103,11 @@ func sendHandoffMail(subject, message string) (string, error) {
 		"--", subject,
 	}
 
-	cmd := exec.Command("bd", args...)
-	cmd.Dir = townRoot // Run from town root for town-level beads
-	cmd.Env = append(os.Environ(), "BEADS_DIR="+filepath.Join(townRoot, ".beads"))
+	cmd := BdCmd(args...).
+		WithAutoCommit().
+		Dir(townRoot).
+		Build()
+	cmd.Env = append(cmd.Env, "BEADS_DIR="+filepath.Join(townRoot, ".beads"))
 
 	var stdout, stderr strings.Builder
 	cmd.Stdout = &stdout
@@ -1097,9 +1127,11 @@ func sendHandoffMail(subject, message string) (string, error) {
 	}
 
 	// Auto-hook the created mail bead
-	hookCmd := exec.Command("bd", "update", beadID, "--status=hooked", "--assignee="+agentID)
-	hookCmd.Dir = townRoot
-	hookCmd.Env = append(os.Environ(), "BEADS_DIR="+filepath.Join(townRoot, ".beads"))
+	hookCmd := BdCmd("update", beadID, "--status=hooked", "--assignee="+agentID).
+		WithAutoCommit().
+		Dir(townRoot).
+		Build()
+	hookCmd.Env = append(hookCmd.Env, "BEADS_DIR="+filepath.Join(townRoot, ".beads"))
 	hookCmd.Stderr = os.Stderr
 
 	if err := hookCmd.Run(); err != nil {
