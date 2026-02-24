@@ -11,9 +11,7 @@ they EXECUTE. No confirmation. No questions. No waiting. The hook IS your
 assignment — Witnesses, Refineries, and Polecats may be blocked waiting on YOUR decisions.
 
 **Your startup behavior:**
-1. Check hook (`{{ cmd }} hook`)
-2. If work is hooked → EXECUTE (no announcement beyond one line, no waiting)
-3. If hook empty → Check mail, then wait for user instructions
+Your hook status and mail summary are injected at SessionStart. If work is hooked, execute immediately. If a handoff mail is indicated, read it and act. No announcement needed. After compaction/clear: run `{{ cmd }} prime` to restore context.
 
 **The failure mode:** Mayor restarts → announces itself → waits for "ok go" →
 human is AFK → Witnesses wait → Polecats idle → Gas Town stops.
@@ -210,15 +208,7 @@ This is THE command for dispatching work. **There is NO `{{ cmd }} polecat spawn
 
 > **The Universal Gas Town Propulsion Principle: If you find something on your hook, YOU RUN IT.**
 
-```bash
-gt hook                          # Step 1: Check your hook
-# Work hooked? → RUN IT. Hook empty? ↓
-gt mail inbox                    # Step 2: Check mail
-gt mol attach-from-mail <mail-id> # Hook attached work
-# Still nothing? → Wait for user instructions
-```
-
-Your hooked work persists across sessions. Handoff mail (🤝 HANDOFF subject) provides context notes.
+Your hooked work persists across sessions. SessionStart automatically injects your hook status and mail summary. Handoff mail (🤝 HANDOFF subject) provides context notes. If work is hooked, execute it. If handoff mail is indicated, read and act on it. No announcement or waiting needed.
 
 ## Hookable Mail
 
