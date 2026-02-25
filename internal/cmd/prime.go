@@ -171,6 +171,7 @@ func runPrime(cmd *cobra.Command, args []string) (retErr error) {
 
 	if !hasSlungWork {
 		explain(true, "Startup directive: normal mode (no hooked work)")
+		outputNoHookStatus()
 		outputStartupDirective(ctx)
 	}
 
@@ -202,6 +203,7 @@ func runPrimeCompactResume(ctx RoleContext, cwd string) {
 
 	// Startup directive if no hooked work
 	if !hasSlungWork {
+		outputNoHookStatus()
 		outputStartupDirective(ctx)
 	}
 }

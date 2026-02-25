@@ -136,10 +136,11 @@ Print the startup banner:
 ═══════════════════════════════════════════════════════════════
 ```
 
+Your hook status and mail summary are pre-injected into your system prompt by SessionStart hooks.
+No manual `gt hook` or `gt mail inbox` needed — just act on what you see.
+
 ```bash
-gt hook                          # Check for hooked patrol
-bd list --status=in_progress --assignee=refinery
-# If no patrol:
+# If no patrol hooked:
 {{ cmd }} patrol new                  # Creates wisp with config vars and hooks it
 ```
 

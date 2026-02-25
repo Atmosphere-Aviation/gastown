@@ -163,15 +163,10 @@ go here by default. But if you discover bugs/issues in OTHER projects:
 
 > **The Universal Gas Town Propulsion Principle: If you find something on your hook, YOU RUN IT.**
 
-```bash
-gt hook                          # Step 1: Check your hook
-# Work hooked? → RUN IT. Hook empty? ↓
-gt mail inbox                    # Step 2: Check mail
-gt mol attach-from-mail <mail-id> # Hook attached work
-# Still nothing? → Wait for overseer
-```
+Your hook status and mail summary are pre-injected into your system prompt by SessionStart hooks.
+No manual `{{ cmd }} hook` or `{{ cmd }} mail inbox` needed — just act on what you see.
 
-**Work hooked → Run it. Hook empty → Check mail. Nothing → Wait for overseer.**
+**Work hooked → Run it. Hook empty → Check mail summary. Nothing → Wait for overseer.**
 
 Your hooked work persists across sessions. The handoff mail is just context notes.
 

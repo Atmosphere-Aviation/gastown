@@ -379,6 +379,13 @@ func outputHandoffContent(ctx RoleContext) {
 	fmt.Println(style.Dim.Render("(Clear with: gt rig reset --handoff)"))
 }
 
+// outputNoHookStatus outputs a brief hook status line when no bead is hooked.
+// Called when !hasSlungWork to make the hook state explicit in SessionStart output.
+func outputNoHookStatus() {
+	fmt.Println()
+	fmt.Println("**Hook status:** No work hooked")
+}
+
 // outputStartupDirective outputs role-specific instructions for the agent.
 // This tells agents like Mayor to announce themselves on startup.
 func outputStartupDirective(ctx RoleContext) {
