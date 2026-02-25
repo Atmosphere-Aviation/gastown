@@ -140,6 +140,8 @@ func (h *APIHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.handleSSE(w, r)
 	case path == "/session/preview" && r.Method == http.MethodGet:
 		h.handleSessionPreview(w, r)
+	case path == "/token" && r.Method == http.MethodGet:
+		h.handleToken(w, r)
 	default:
 		http.Error(w, "Not found", http.StatusNotFound)
 	}
@@ -2157,4 +2159,10 @@ func (h *APIHandler) computeDashboardHash(ctx context.Context) string {
 
 	h256 := sha256.Sum256([]byte(strings.Join(parts, "|")))
 	return fmt.Sprintf("%x", h256[:8])
+}
+
+// handleToken returns the CSRF token for cross-origin clients.
+func (h *APIHandler) handleToken(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"token": h.csrfToken})
 }
