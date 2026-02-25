@@ -468,11 +468,9 @@ func findAgentWork(ctx RoleContext) *beads.Issue {
 
 // outputAutonomousDirective displays the AUTONOMOUS WORK MODE header and instructions.
 func outputAutonomousDirective(ctx RoleContext, hookedBead *beads.Issue, hasMolecule bool) {
-	roleAnnounce := buildRoleAnnouncement(ctx)
-
 	fmt.Println()
 	fmt.Printf("%s\n\n", style.Bold.Render("## 🚨 AUTONOMOUS WORK MODE 🚨"))
-	fmt.Println("Work is on your hook. After announcing your role, begin IMMEDIATELY.")
+	fmt.Println("Work is on your hook. Begin IMMEDIATELY — no announcements needed.")
 	fmt.Println()
 	fmt.Println("This is physics, not politeness. Gas Town is a steam engine - you are a piston.")
 	fmt.Println("Every moment you wait is a moment the engine stalls. Other agents may be")
@@ -481,16 +479,16 @@ func outputAutonomousDirective(ctx RoleContext, hookedBead *beads.Issue, hasMole
 	fmt.Println("Remember: Every completion is recorded in the capability ledger. Your work")
 	fmt.Println("history is visible, and quality matters. Execute with care - you're building")
 	fmt.Println("a track record that proves autonomous execution works at scale.")
-	fmt.Println()
-	fmt.Println("1. Announce: \"" + roleAnnounce + "\" (ONE line, no elaboration)")
 
 	if hasMolecule {
-		fmt.Println("2. This bead has an ATTACHED MOLECULE (formula workflow)")
-		fmt.Println("3. Work through molecule steps in order - see CURRENT STEP below")
-		fmt.Println("4. Close each step with `bd close <step-id>`, then check `bd mol current` for next step")
+		fmt.Println()
+		fmt.Println("1. This bead has an ATTACHED MOLECULE (formula workflow)")
+		fmt.Println("2. Work through molecule steps in order - see CURRENT STEP below")
+		fmt.Println("3. Close each step with `bd close <step-id>`, then check `bd mol current` for next step")
 	} else {
-		fmt.Printf("2. Then IMMEDIATELY run: `bd show %s`\n", hookedBead.ID)
-		fmt.Println("3. Begin execution - no waiting for user input")
+		fmt.Println()
+		fmt.Printf("1. IMMEDIATELY run: `bd show %s`\n", hookedBead.ID)
+		fmt.Println("2. Begin execution - no waiting for user input")
 	}
 	fmt.Println()
 	fmt.Println("**DO NOT:**")
@@ -610,28 +608,6 @@ func outputBeadPreview(hookedBead *beads.Issue) {
 		}
 	}
 	fmt.Println()
-}
-
-// buildRoleAnnouncement creates the role announcement string for autonomous mode.
-func buildRoleAnnouncement(ctx RoleContext) string {
-	switch ctx.Role {
-	case RoleMayor:
-		return "Mayor, checking in."
-	case RoleDeacon:
-		return "Deacon, checking in."
-	case RoleBoot:
-		return "Boot, checking in."
-	case RoleWitness:
-		return fmt.Sprintf("%s Witness, checking in.", ctx.Rig)
-	case RoleRefinery:
-		return fmt.Sprintf("%s Refinery, checking in.", ctx.Rig)
-	case RolePolecat:
-		return fmt.Sprintf("%s Polecat %s, checking in.", ctx.Rig, ctx.Polecat)
-	case RoleCrew:
-		return fmt.Sprintf("%s Crew %s, checking in.", ctx.Rig, ctx.Polecat)
-	default:
-		return "Agent, checking in."
-	}
 }
 
 // getGitRoot returns the root of the current git repository.
