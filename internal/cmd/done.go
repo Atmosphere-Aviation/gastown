@@ -440,14 +440,12 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 
 				// Acceptance criteria gate: check for unchecked criteria before closing.
 				// If criteria exist and are unchecked, warn and skip close — the bead stays
-				// open for witness/mayor to handle. This prevents polecats from closing
-				// beads without verifying their work meets acceptance criteria.
+				// open for witness/mayor to handle.
 				skipClose := false
 				if issue, err := bd.Show(issueID); err == nil {
 					if unchecked := beads.HasUncheckedCriteria(issue); unchecked > 0 {
 						style.PrintWarning("issue %s has %d unchecked acceptance criteria — skipping close", issueID, unchecked)
 						fmt.Printf("  The bead will remain open for witness/mayor review.\n")
-						fmt.Printf("  To close manually: bd update %s --acceptance '<checked criteria>' && bd close %s\n", issueID, issueID)
 						skipClose = true
 					}
 				}
@@ -632,6 +630,12 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 			}
 		}
 		fmt.Printf("%s Branch pushed to origin\n", style.Bold.Render("✓"))
+
+		// Fix cleanup_status after successful push (gt-wcr).
+		// Status was detected before push, so "unpushed" is now stale.
+		if doneCleanupStatus == "unpushed" {
+			doneCleanupStatus = "clean"
+		}
 
 		// Write push checkpoint for resume (gt-aufru)
 		if agentBeadID != "" {

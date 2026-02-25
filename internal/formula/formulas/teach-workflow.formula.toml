@@ -1,0 +1,57 @@
+description = "Teach Claude a workflow by walking through it. Steps are captured as bead comments, then fed to /skill-factory to generate a reusable skill."
+formula = "teach-workflow"
+type = "workflow"
+version = 1
+
+[[steps]]
+acceptance = "Session context analyzed, workflow candidates presented via AskUserQuestion, user selected workflow and trigger"
+description = """FIRST: Construct context from the current session:
+  1. Review what tools were called, files read/written, commands run
+  2. Identify candidate workflows (repeating patterns, multi-step procedures)
+  3. Present candidates via AskUserQuestion (multiSelect=false) with clear descriptions
+  4. User selects which workflow to capture
+  5. Ask for trigger condition via AskUserQuestion (when should this skill fire?)
+  6. Document selection + trigger as: bd comments add <id> 'TRIGGER: <condition>'
+NEVER skip the interactive selection. The user chooses, not the agent."""
+id = "define-trigger"
+title = "Analyze session and define trigger for {{workflow_name}}"
+
+[[steps]]
+acceptance = "All steps documented as individual bd comments with STEP format"
+description = """Walk through the workflow with Spencer. For EACH step:
+  bd comments add <id> "STEP N: <action>
+  WHY: <reason>
+  TOOLS: <what tools/commands used>
+  INPUT: <what info needed>
+  OUTPUT: <what was produced>
+  EDGE: <gotchas>"
+Keep walking until Spencer says the workflow is complete."""
+id = "capture-steps"
+needs = ["define-trigger"]
+title = "Walk through {{workflow_name}} step by step"
+
+[[steps]]
+acceptance = "Spencer confirmed no missing steps or edge cases"
+description = "Review all captured comments with bd show <id>. Ask Spencer: any steps missing? Edge cases? Failure modes? Add any final comments."
+id = "review-steps"
+needs = ["capture-steps"]
+title = "Review captured steps with Spencer"
+
+[[steps]]
+acceptance = "SKILL.md generated and passes /validate-skill"
+description = "Run /skill-factory using the bead's accumulated comments as the workflow specification. The comments are ordered chronologically — each is a step. The trigger from step 1 becomes the frontmatter trigger. Validate with /validate-skill."
+id = "generate-skill"
+needs = ["review-steps"]
+title = "Generate skill via /skill-factory"
+
+[[steps]]
+acceptance = "Skill registered in skill-agent-routing.md and test invocation works"
+description = "Add the new skill to the routing table in skill-agent-routing.md. Test by describing a matching scenario and confirming the skill activates. Update learnings report."
+id = "register-and-test"
+needs = ["generate-skill"]
+title = "Register and test {{workflow_name}} skill"
+
+[vars]
+[vars.workflow_name]
+description = "Name of the workflow being taught (e.g., upstream-review, deploy-check)"
+required = true
