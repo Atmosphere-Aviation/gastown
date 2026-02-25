@@ -88,8 +88,10 @@ func NewAPIHandler(defaultRunTimeout, maxRunTimeout time.Duration, csrfToken str
 
 // ServeHTTP routes API requests to the appropriate handler.
 func (h *APIHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	// No CORS headers — the dashboard is served from the same origin.
-	// Omitting Access-Control-Allow-Origin prevents cross-origin requests.
+	// Set CORS headers for cross-origin access (cockpit UI at :8099)
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-Dashboard-Token")
 
 	if r.Method == http.MethodOptions {
 		w.WriteHeader(http.StatusNoContent)
