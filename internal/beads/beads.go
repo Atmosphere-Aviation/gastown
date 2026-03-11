@@ -2,6 +2,7 @@
 package beads
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -10,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -551,7 +553,57 @@ func (b *Beads) List(opts ListOptions) ([]*Issue, error) {
 
 	var issues []*Issue
 	if err := json.Unmarshal(out, &issues); err != nil {
-		return nil, fmt.Errorf("parsing bd list output: %w", err)
+		// Fallback: bd 0.59.0 --json flag is broken — returns human-readable text.
+		// Parse IDs from text output and batch-query with bd show --json.
+		return b.listFallback(out)
+	}
+
+	return issues, nil
+}
+
+// listIDRegexp matches bead IDs from human-readable bd list output.
+// Lines look like: "○ hq-mayor ● P2 Mayor" or "? hq-wisp-5yb5 ● P1 ..."
+var listIDRegexp = regexp.MustCompile(`^[○◐●✓❄?]\s+(\S+)\s+`)
+
+// listFallback handles bd list output when --json is broken.
+// It extracts IDs from the human-readable text and batch-queries bd show --json.
+func (b *Beads) listFallback(out []byte) ([]*Issue, error) {
+	text := strings.TrimSpace(string(out))
+
+	// "No issues found." or empty output
+	if text == "" || strings.HasPrefix(text, "No issues") {
+		return []*Issue{}, nil
+	}
+
+	// Extract bead IDs from each line
+	var ids []string
+	scanner := bufio.NewScanner(bytes.NewReader(out))
+	for scanner.Scan() {
+		line := scanner.Text()
+		// Stop at separator line
+		if strings.HasPrefix(line, "---") {
+			break
+		}
+		matches := listIDRegexp.FindStringSubmatch(line)
+		if len(matches) >= 2 {
+			ids = append(ids, matches[1])
+		}
+	}
+
+	if len(ids) == 0 {
+		return []*Issue{}, nil
+	}
+
+	// Batch query: bd show --json <id1> <id2> ...
+	showArgs := append([]string{"show", "--json"}, ids...)
+	showOut, err := b.run(showArgs...)
+	if err != nil {
+		return nil, fmt.Errorf("list fallback (bd show): %w", err)
+	}
+
+	var issues []*Issue
+	if err := json.Unmarshal(showOut, &issues); err != nil {
+		return nil, fmt.Errorf("list fallback parse: %w", err)
 	}
 
 	return issues, nil

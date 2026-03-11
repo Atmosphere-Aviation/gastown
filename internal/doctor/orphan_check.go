@@ -326,11 +326,21 @@ func (c *OrphanProcessCheck) Run(ctx *CheckContext) *CheckResult {
 		}
 	}
 
+	// Build set of ancestor PIDs for the current process so we can
+	// exclude the session that is actually running gt doctor.
+	selfAncestors := c.getAncestorPIDs(os.Getpid())
+
 	// Check which runtime processes are outside tmux
 	var outsideTmux []processInfo
 	var insideTmux int
 
 	for _, proc := range runtimeProcs {
+		// Skip processes that are ancestors of the current gt doctor process
+		// (i.e., the user's own Claude session running this check).
+		if selfAncestors[proc.pid] {
+			insideTmux++ // Count as valid, not orphaned
+			continue
+		}
 		if c.isOrphanProcess(proc, tmuxPIDs) {
 			outsideTmux = append(outsideTmux, proc)
 		} else {
@@ -441,9 +451,11 @@ func (c *OrphanProcessCheck) findRuntimeProcesses() ([]processInfo, error) {
 		// Get full args
 		args := strings.Join(fields[2:], " ")
 
-		// Only match Gas Town Claude processes (have --dangerously-skip-permissions)
-		// This excludes user's personal Claude sessions
-		if !strings.Contains(args, "--dangerously-skip-permissions") {
+		// Only match Gas Town Claude processes.
+		// GT-managed sessions have both --dangerously-skip-permissions AND [GAS TOWN]
+		// in their args. Personal Claude sessions may use --dangerously-skip-permissions
+		// but won't have the [GAS TOWN] marker.
+		if !strings.Contains(args, "--dangerously-skip-permissions") || !strings.Contains(args, "[GAS TOWN]") {
 			continue
 		}
 
@@ -463,6 +475,28 @@ func (c *OrphanProcessCheck) findRuntimeProcesses() ([]processInfo, error) {
 	}
 
 	return procs, nil
+}
+
+// getAncestorPIDs returns a set of all ancestor PIDs for a given process.
+func (c *OrphanProcessCheck) getAncestorPIDs(pid int) map[int]bool {
+	ancestors := make(map[int]bool)
+	current := pid
+	for current > 1 {
+		ancestors[current] = true
+		out, err := exec.Command("ps", "-p", fmt.Sprintf("%d", current), "-o", "ppid=").Output() //nolint:gosec // G204: PID from os.Getpid()
+		if err != nil {
+			break
+		}
+		var ppid int
+		if _, err := fmt.Sscanf(strings.TrimSpace(string(out)), "%d", &ppid); err != nil {
+			break
+		}
+		if ppid == current {
+			break
+		}
+		current = ppid
+	}
+	return ancestors
 }
 
 // isOrphanProcess checks if a runtime process is orphaned.

@@ -65,6 +65,11 @@ func (c *CheckMisclassifiedWisps) Run(ctx *CheckContext) *CheckResult {
 		// Town-level beads are rare and covered by the JSONL fallback path.
 		for _, db := range databases {
 			rigDir := filepath.Join(ctx.TownRoot, db)
+			// Skip databases that don't have a corresponding rig directory
+			// (e.g., "hq" is the town database, not a rig directory).
+			if _, err := os.Stat(rigDir); os.IsNotExist(err) {
+				continue
+			}
 			found, probeErrors := c.findMisclassifiedWispsDolt(rigDir, db)
 			totalProbeErrors += probeErrors
 			if len(found) > 0 {
@@ -284,10 +289,9 @@ func (c *CheckMisclassifiedWisps) findMisclassifiedWispsJSONL(path string, rigNa
 
 // isIssueStillOpen verifies an issue is still open/non-ephemeral in the live DB.
 // This guards against stale JSONL data when the daemon isn't running and hasn't flushed.
-// Uses --allow-stale to survive DB/JSONL drift (consistent with all other bd invocations).
 // Returns an error if the probe fails, so callers can track and surface failures.
 func isIssueStillOpen(workDir, id string) (bool, error) {
-	cmd := exec.Command("bd", "--allow-stale", "show", id, "--json")
+	cmd := exec.Command("bd", "show", id, "--json")
 	cmd.Dir = workDir
 	output, err := cmd.Output()
 	if err != nil {

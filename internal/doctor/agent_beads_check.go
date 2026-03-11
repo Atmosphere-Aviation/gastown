@@ -113,12 +113,13 @@ func (c *AgentBeadsCheck) Run(ctx *CheckContext) *CheckResult {
 	}
 
 	// checkAgentBead verifies an agent bead exists (in issues or wisps table).
-	// Label checking only applies to beads found in the issues table (wisps
-	// don't expose labels in their list output).
+	// Label checking only applies to non-ephemeral beads in the issues table.
+	// Wisps (ephemeral beads) don't support labels in bd 0.59.0.
 	checkAgentBead := func(id string) {
 		if issue, exists := allAgentBeads[id]; exists {
-			// Found in issues table — check label
-			if !beads.HasLabel(issue, "gt:agent") {
+			// Skip label check for wisps — they can't have labels in bd 0.59.0.
+			// Wisps are identified by being in allWispIDs (the JSON omits ephemeral field).
+			if !allWispIDs[id] && !beads.HasLabel(issue, "gt:agent") {
 				missingLabel = append(missingLabel, id)
 			}
 		} else if !allWispIDs[id] {

@@ -667,17 +667,15 @@ func (b *Beads) ListAgentBeads() (map[string]*Issue, error) {
 	}
 
 	// Also query issues table (backward compat during migration).
-	out, err := b.run("list", "--label=gt:agent", "--json")
+	// Use b.List() which handles bd 0.59.0's broken --json flag via fallback.
+	issues, err := b.List(ListOptions{Label: "gt:agent", Priority: -1})
 	if err != nil && len(result) == 0 {
 		return nil, err
 	}
 	if err == nil {
-		var issues []*Issue
-		if jsonErr := json.Unmarshal(out, &issues); jsonErr == nil {
-			for _, issue := range issues {
-				if _, exists := result[issue.ID]; !exists {
-					result[issue.ID] = issue
-				}
+		for _, issue := range issues {
+			if _, exists := result[issue.ID]; !exists {
+				result[issue.ID] = issue
 			}
 		}
 	}
