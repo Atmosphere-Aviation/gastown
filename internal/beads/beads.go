@@ -281,9 +281,7 @@ func (b *Beads) run(args ...string) (_ []byte, retErr error) {
 	defer func() {
 		telemetry.RecordBDCall(context.Background(), args, float64(time.Since(start).Milliseconds()), retErr, stdout.Bytes(), stderr.String())
 	}()
-	// Use --allow-stale to prevent failures when db is temporarily stale
-	// (e.g., after daemon is killed during shutdown).
-	fullArgs := append([]string{"--allow-stale"}, args...)
+	fullArgs := append([]string{}, args...)
 
 	// Always explicitly set BEADS_DIR to prevent inherited env vars from
 	// causing prefix mismatches. Use explicit beadsDir if set, otherwise
@@ -337,7 +335,7 @@ func (b *Beads) runWithRouting(args ...string) (_ []byte, retErr error) { //noli
 	defer func() {
 		telemetry.RecordBDCall(context.Background(), args, float64(time.Since(start).Milliseconds()), retErr, stdout.Bytes(), stderr.String())
 	}()
-	fullArgs := append([]string{"--allow-stale"}, args...)
+	fullArgs := append([]string{}, args...)
 
 	cmd := exec.Command("bd", fullArgs...) //nolint:gosec // G204: bd is a trusted internal tool
 	cmd.Dir = b.workDir
