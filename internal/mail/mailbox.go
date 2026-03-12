@@ -164,7 +164,12 @@ func (m *Mailbox) listFromDir(beadsDir string) ([]*Message, error) {
 			if len(stdout) == 0 || string(stdout) == "null" {
 				continue
 			}
-			return nil, err
+			// Fallback: bd 0.59.0 --json flag broken — parse IDs and batch show
+			fallbackMsgs, fbErr := bdListFallback[BeadsMessage](stdout, m.workDir, beadsDir)
+			if fbErr != nil {
+				return nil, fbErr
+			}
+			msgs = fallbackMsgs
 		}
 
 		for i := range msgs {
@@ -203,7 +208,9 @@ func (m *Mailbox) listFromDir(beadsDir string) ([]*Message, error) {
 			if len(stdout) == 0 || string(stdout) == "null" {
 				continue
 			}
-			continue // Non-fatal for CC
+			// Fallback: bd 0.59.0 --json flag broken
+			fallbackMsgs, _ := bdListFallback[BeadsMessage](stdout, m.workDir, beadsDir)
+			msgs = fallbackMsgs
 		}
 
 		for i := range msgs {

@@ -1,9 +1,12 @@
 package mail
 
 import (
+	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"os/exec"
+	"regexp"
 	"strings"
 	"time"
 
@@ -102,4 +105,48 @@ func bdReadCtx() (context.Context, context.CancelFunc) {
 // bdWriteCtx returns a context with the standard bd write timeout.
 func bdWriteCtx() (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.Background(), bdWriteTimeout)
+}
+
+// bdListIDRegexp matches bead IDs from human-readable bd list output.
+var bdListIDRegexp = regexp.MustCompile(`^[○◐●✓❄?]\s+(\S+)\s+`)
+
+// bdListFallback handles bd list output when --json is broken (bd 0.59.0).
+// Extracts IDs from human-readable text and batch-queries bd show --json.
+func bdListFallback[T any](stdout []byte, workDir, beadsDir string) ([]T, error) {
+	text := strings.TrimSpace(string(stdout))
+	if text == "" || strings.HasPrefix(text, "No issues") {
+		return nil, nil
+	}
+
+	var ids []string
+	scanner := bufio.NewScanner(bytes.NewReader(stdout))
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.HasPrefix(line, "---") {
+			break
+		}
+		matches := bdListIDRegexp.FindStringSubmatch(line)
+		if len(matches) >= 2 {
+			ids = append(ids, matches[1])
+		}
+	}
+
+	if len(ids) == 0 {
+		return nil, nil
+	}
+
+	// Batch query: bd show --json <id1> <id2> ...
+	showArgs := append([]string{"show", "--json"}, ids...)
+	ctx, cancel := bdReadCtx()
+	defer cancel()
+	showOut, err := runBdCommand(ctx, showArgs, workDir, beadsDir)
+	if err != nil {
+		return nil, err
+	}
+
+	var result []T
+	if err := json.Unmarshal(showOut, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
 }
