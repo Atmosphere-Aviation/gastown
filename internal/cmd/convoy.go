@@ -1771,7 +1771,11 @@ func runConvoyList(cmd *cobra.Command, args []string) error {
 		CreatedAt string   `json:"created_at"`
 		Labels    []string `json:"labels"`
 	}
-	if err := json.Unmarshal(stdout.Bytes(), &convoys); err != nil {
+	// bd list --json may return "No issues found." instead of [] when empty
+	raw := strings.TrimSpace(stdout.String())
+	if raw == "" || strings.HasPrefix(raw, "No issues") {
+		convoys = nil
+	} else if err := json.Unmarshal([]byte(raw), &convoys); err != nil {
 		return fmt.Errorf("parsing convoy list: %w", err)
 	}
 
